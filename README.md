@@ -31,7 +31,7 @@ Edit `.env`:
 
 ## Sheet format
 
-The first sheet in the workbook needs these column headers (any order): `Company`, `Role`, `Person`, `Email`, `Subject`, `Mail Text`, `Follow-up Text`. Write `**like this**` in `Mail Text`/`Follow-up Text` for bold. Leave `Follow-up Text` blank on a row to never follow up on it. The app adds `Status`, `Message ID`, `Last Sent At`, `Follow-up Count`, `Error` columns itself if they're missing — those are app-owned, don't hand-edit them except to fix a `Failed` row before rerunning.
+`EXCEL_PATH` can be an `.xlsx` workbook or a `.csv` file (chosen by extension; UTF-8, quoted fields, status written back to the same file). For `.xlsx`, the first sheet in the workbook needs these column headers (any order): `Company`, `Role`, `Person`, `Email`, `Subject`, `Mail Text`, `Follow-up Text`. Write `**like this**` in `Mail Text`/`Follow-up Text` for bold. Leave `Follow-up Text` blank on a row to never follow up on it. The app adds `Status`, `Message ID`, `Last Sent At`, `Follow-up Count`, `Error` columns itself if they're missing — those are app-owned, don't hand-edit them except to fix a `Failed` row before rerunning.
 
 Generate a 5-row sample sheet to try it out:
 

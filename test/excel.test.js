@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import ExcelJS from "exceljs";
@@ -127,6 +127,31 @@ test("openSheet throws a clear error when a required column is missing", async (
     await workbook.xlsx.writeFile(filePath);
 
     await assert.rejects(() => openSheet(filePath), /missing required column/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("CSV files are read and written, including quoted multi-line cells", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "mail-autosend-test-"));
+  const filePath = path.join(dir, "test.csv");
+  try {
+    await writeFile(
+      filePath,
+      '"Company","Role","Person","Email","Subject","Mail Text","Follow-up Text"\n' +
+        '"A","R1","P1","a@x.com","S1","Hi P1,\n\nSee **R1**, ok.\n\nBest,\nH","F1"\n'
+    );
+    const sheet = await openSheet(filePath);
+    const [row] = getAllRows(sheet);
+    assert.equal(row.mailText, "Hi P1,\n\nSee **R1**, ok.\n\nBest,\nH");
+
+    markInitialSent(sheet, row.rowNumber, { messageId: "<m@x>", sentAt: new Date("2026-01-01T09:00:00Z") });
+    await save(sheet);
+
+    const [updated] = getAllRows(await openSheet(filePath));
+    assert.equal(updated.status, "Sent");
+    assert.equal(updated.mailText, row.mailText);
+    assert.equal(updated.lastSentAt.toISOString(), "2026-01-01T09:00:00.000Z");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -1,3 +1,4 @@
+import path from "node:path";
 import ExcelJS from "exceljs";
 
 const HEADERS = {
@@ -33,9 +34,17 @@ function buildHeaderIndex(headerRow) {
   return index;
 }
 
+function isCsv(filePath) {
+  return path.extname(filePath).toLowerCase() === ".csv";
+}
+
 export async function openSheet(excelPath) {
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(excelPath);
+  if (isCsv(excelPath)) {
+    await workbook.csv.readFile(excelPath);
+  } else {
+    await workbook.xlsx.readFile(excelPath);
+  }
   const worksheet = workbook.worksheets[0];
   if (!worksheet) throw new Error("No worksheet found in the Excel file");
 
@@ -120,5 +129,9 @@ export function markFailed({ worksheet, columns }, rowNumber, errorMessage) {
 }
 
 export async function save({ workbook, excelPath }) {
-  await workbook.xlsx.writeFile(excelPath);
+  if (isCsv(excelPath)) {
+    await workbook.csv.writeFile(excelPath);
+  } else {
+    await workbook.xlsx.writeFile(excelPath);
+  }
 }
