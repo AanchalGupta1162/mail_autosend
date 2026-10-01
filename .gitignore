@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.log
+.DS_Store
+
+# Real data — regenerate the sheet with `npm run sample-sheet`, keep your
+# actual resume out of git (resume-placeholder.txt stays tracked).
+sample-recruiters.xlsx
+attachments
+signature.html

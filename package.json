@@ -1,0 +1,17 @@
+{
+  "name": "mail-autosend",
+  "version": "1.0.0",
+  "description": "Sends personalized recruiter emails from an Excel sheet, paced over a time window.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "sample-sheet": "node scripts/createSampleSheet.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "imapflow": "^1.0.167",
+    "nodemailer": "^6.9.15"
+  }
+}
