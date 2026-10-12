@@ -90,6 +90,19 @@ export function batchesRouter({ pool, config }) {
         return res.status(422).json({ error: "No valid rows to import", errors });
       }
 
+      const existing = await pool.query(
+        `SELECT DISTINCT ON (lower(email)) lower(email) AS email, status FROM contacts
+          WHERE lower(email) = ANY($1::text[]) ORDER BY lower(email), created_at DESC`,
+        [rows.map((r) => r.email.toLowerCase())],
+      );
+      const existingStatus = new Map(existing.rows.map((r) => [r.email, r.status]));
+      const warnings = rows
+        .filter((r) => existingStatus.has(r.email.toLowerCase()))
+        .map((r) => {
+          const st = existingStatus.get(r.email.toLowerCase());
+          return { row: r.row, message: `Email is already in another batch (status: ${st})`, existingStatus: st };
+        });
+
       const result = await inTx(pool, async (db) => {
         const b = await db.query(
           "INSERT INTO batches(name, original_filename, created_by) VALUES ($1, $2, $3) RETURNING *",
@@ -117,6 +130,7 @@ export function batchesRouter({ pool, config }) {
         batch: serializeBatch(result.batch),
         contacts: result.contacts.map(withPreview),
         errors,
+        warnings,
       });
     } catch (err) {
       next(err);

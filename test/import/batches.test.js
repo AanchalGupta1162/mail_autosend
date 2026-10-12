@@ -249,3 +249,32 @@ test("errors never leak SQL or stack", async () => {
   assert.equal(r.status, 400);
   assert.doesNotMatch(r.text, /select|stack|at \w+ \(/i);
 });
+
+test("mark-replied clears followup_requested and is idempotent (one event, replied_at stable)", async () => {
+  const up = (await upload({ content: Buffer.from(`${H}\n${line("idem@example.com")}`) })).json;
+  const id = up.contacts[0].id;
+  await t.pool.query("update contacts set status='sent', followup_requested=true where id=$1", [id]);
+  const first = await c.post(`/api/contacts/${id}/mark-replied`, {});
+  assert.equal(first.status, 200);
+  assert.equal(first.json.contact.followupRequested, false);
+  assert.equal((await t.pool.query("select followup_requested f from contacts where id=$1", [id])).rows[0].f, false);
+  const second = await c.post(`/api/contacts/${id}/mark-replied`, {});
+  assert.equal(second.status, 200);
+  assert.equal(second.json.contact.status, "replied");
+  assert.equal(second.json.contact.repliedAt, first.json.contact.repliedAt);
+  assert.equal(await count("select count(*) n from events where contact_id=$1 and type='replied'", [id]), 1);
+});
+
+test("cross-batch duplicate email is imported with a warning carrying the existing status; warnings is [] otherwise", async () => {
+  const first = await upload({ content: Buffer.from(`${H}\n${line("cross@example.com")}`) });
+  assert.deepEqual(first.json.warnings, []);
+  await t.pool.query("update contacts set status='replied' where id=$1", [first.json.contacts[0].id]);
+  const r = await upload({ content: Buffer.from(`${H}\n${line("fresh-x@example.com")}\n${line("CROSS@example.com")}`) });
+  assert.equal(r.status, 201);
+  assert.equal(r.json.contacts.length, 2);
+  assert.deepEqual(r.json.errors, []);
+  assert.equal(r.json.warnings.length, 1);
+  assert.equal(r.json.warnings[0].row, 3);
+  assert.equal(r.json.warnings[0].existingStatus, "replied");
+  assert.match(r.json.warnings[0].message, /already in another batch \(status: replied\)/);
+});

@@ -49,8 +49,13 @@ export async function markReplied(pool, id) {
     const cur = await db.query("SELECT status FROM contacts WHERE id = $1 FOR UPDATE", [id]);
     if (!cur.rowCount) throw new HttpError(404, "Contact not found");
     if (cur.rows[0].status === "opted_out") throw new HttpError(409, "Contact has opted out");
+    if (cur.rows[0].status === "replied") {
+      // Idempotent: nothing to rewrite, no second event.
+      const same = await db.query("SELECT * FROM contacts WHERE id = $1", [id]);
+      return serializeContact(same.rows[0]);
+    }
     const { rows } = await db.query(
-      `UPDATE contacts SET status = 'replied', replied_at = COALESCE(replied_at, now()) WHERE id = $1 RETURNING *`,
+      `UPDATE contacts SET status = 'replied', replied_at = COALESCE(replied_at, now()), followup_requested = false WHERE id = $1 RETURNING *`,
       [id],
     );
     const cancelled = await db.query(CANCEL_PENDING, [[id]]);
