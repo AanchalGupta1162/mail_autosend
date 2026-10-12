@@ -3,16 +3,20 @@
   "version": "1.0.0",
   "description": "Sends personalized recruiter emails from an Excel sheet, paced over a time window.",
   "type": "module",
-  "main": "src/index.js",
+  "main": "src/server/server.js",
   "scripts": {
-    "start": "node --env-file=.env src/index.js",
+    "start": "node --env-file=.env src/server/server.js",
+    "legacy:start": "node --env-file=.env src/index.js",
+    "migrate": "node --env-file=.env src/db/migrate.js",
+    "seed:admin": "node --env-file=.env scripts/seedAdmin.js",
     "sample-sheet": "node scripts/createSampleSheet.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --env-file=.env --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "exceljs": "^4.4.0",
     "imapflow": "^1.0.167",
     "nodemailer": "^6.9.15",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "zod": "^4.6.6"
   }
 }
