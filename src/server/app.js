@@ -7,6 +7,8 @@ import connectPgSimple from "connect-pg-simple";
 import { rateLimit } from "express-rate-limit";
 import { requireAuth, requireCsrf } from "../auth/middleware.js";
 import { authRouter } from "../auth/routes.js";
+import { batchesRouter } from "./routes/batches.js";
+import { contactsRouter } from "./routes/contacts.js";
 import { errorHandler, notFound } from "./errors.js";
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
@@ -88,6 +90,8 @@ export function createApp({ pool, config, mailer, logger = console, staticDir, l
   // Deny by default: guards come before every router.
   app.use("/api", requireAuth, requireCsrf);
   app.use("/api/auth", authRouter({ pool }));
+  app.use("/api/batches", batchesRouter({ pool, config }));
+  app.use("/api/contacts", contactsRouter({ pool }));
   app.use("/api", notFound);
 
   const dist = staticDir && existsSync(path.join(staticDir, "index.html")) ? staticDir : null;
