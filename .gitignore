@@ -8,3 +8,5 @@ node_modules/
 sample-recruiters.xlsx
 attachments
 signature.html
+# SDD scratch workspace
+.superpowers/
