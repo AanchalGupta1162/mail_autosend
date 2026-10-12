@@ -4,7 +4,14 @@ const bool = (def) =>
   z
     .string()
     .optional()
-    .transform((v) => (v === undefined || v === "" ? def : ["true", "1", "yes"].includes(v.toLowerCase())));
+    .transform((v, ctx) => {
+      if (v === undefined || v === "") return def;
+      const x = v.toLowerCase();
+      if (["true", "1", "yes"].includes(x)) return true;
+      if (["false", "0", "no"].includes(x)) return false;
+      ctx.addIssue({ code: "custom", message: "must be one of true/false/1/0/yes/no" });
+      return z.NEVER;
+    });
 
 const int = (def, min = 0) =>
   z

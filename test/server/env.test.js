@@ -67,3 +67,35 @@ test("error message never leaks the secret value", () => {
     assert.ok(!e.message.includes("tooshortsecret"));
   }
 });
+
+test("DRY_RUN accepts only explicit boolean spellings", () => {
+  for (const v of ["true", "TRUE", "1", "yes", "Yes"]) {
+    assert.equal(loadServerConfig({ ...base, DRY_RUN: v }).dryRun, true, v);
+  }
+  const creds = { GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw" };
+  for (const v of ["false", "FALSE", "0", "no", "No"]) {
+    assert.equal(loadServerConfig({ ...base, ...creds, DRY_RUN: v }).dryRun, false, v);
+  }
+});
+
+test("DRY_RUN typo is rejected, naming the variable but not the value", () => {
+  const creds = { GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw" };
+  for (const v of ["ture", "flase", "off", "2"]) {
+    assert.throws(
+      () => loadServerConfig({ ...base, ...creds, DRY_RUN: v }),
+      (e) => /DRY_RUN/.test(e.message) && !e.message.includes(v),
+      v,
+    );
+  }
+});
+
+test(".env.example placeholders are rejected by validation", async () => {
+  const { readFileSync } = await import("node:fs");
+  const text = readFileSync(new URL("../../.env.example", import.meta.url), "utf8");
+  const get = (k) => text.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1].trim() ?? "";
+  assert.throws(
+    () => loadServerConfig({ DATABASE_URL: get("DATABASE_URL"), SESSION_SECRET: get("SESSION_SECRET") }),
+    /SESSION_SECRET/,
+  );
+  assert.ok(get("ADMIN_PASSWORD").length < 10, "ADMIN_PASSWORD placeholder must fail the 10-char minimum");
+});
