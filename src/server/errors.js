@@ -1,9 +1,11 @@
 // Errors safe to show to the client. Anything else becomes a generic 500.
 export class HttpError extends Error {
-  constructor(status, message) {
+  // `extra` is merged into the JSON body (e.g. {refused: [...]}); callers must keep it free of internals.
+  constructor(status, message, extra) {
     super(message);
     this.status = status;
     this.expose = true;
+    this.extra = extra;
   }
 }
 
@@ -24,7 +26,7 @@ export function errorHandler(logger) {
   // eslint-disable-next-line no-unused-vars
   return (err, req, res, _next) => {
     if (res.headersSent) return res.destroy();
-    if (err instanceof HttpError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof HttpError) return res.status(err.status).json({ ...err.extra, error: err.message });
     const mapped = BODY_PARSER_MESSAGES[err?.type];
     if (mapped) return res.status(mapped[0]).json({ error: mapped[1] });
     logger.error(`${req.method} ${req.path} failed: ${err?.name ?? "Error"} ${err?.code ?? ""}`.trim());
