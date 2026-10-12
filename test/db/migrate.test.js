@@ -1,10 +1,10 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { createTestDb } from "../helpers/db.js";
+import { createTestDb, directConnectionString } from "../helpers/db.js";
 import { createPool } from "../../src/db/pool.js";
 import { migrate } from "../../src/db/migrate.js";
 
-const EXPECTED = ["batches", "contacts", "events", "messages", "schema_migrations", "settings", "suppressions", "users"];
+const EXPECTED = ["batches", "contacts", "events", "messages", "schema_migrations", "session", "settings", "suppressions", "users"];
 let db;
 let publicBefore;
 
@@ -34,7 +34,7 @@ test("migrate is idempotent", async () => {
   const again = await migrate(db.pool);
   assert.deepEqual(again.applied, []);
   const { rows } = await db.pool.query("select count(*)::int n from schema_migrations");
-  assert.equal(rows[0].n, 1);
+  assert.equal(rows[0].n, 2);
 });
 
 test("search_path is the test schema, nothing leaks into public", async () => {
@@ -85,4 +85,21 @@ test("users: username unique case-insensitively", async () => {
   await assert.rejects(db.pool.query("insert into users(username, password_hash) values('admin','h')"), {
     code: "23505",
   });
+});
+
+test("concurrent migrators serialize and leave no session-level advisory lock behind", async () => {
+  const schema = db.schema;
+  const p2 = createPool({ connectionString: directConnectionString(), schema });
+  const p3 = createPool({ connectionString: directConnectionString(), schema });
+  try {
+    const [a, b] = await Promise.all([migrate(p2), migrate(p3)]);
+    assert.deepEqual([...a.applied, ...b.applied], []);
+    const { rows } = await db.pool.query(
+      "select count(*)::int n from pg_locks where locktype='advisory' and objid=727001 and granted",
+    );
+    assert.equal(rows[0].n, 0);
+  } finally {
+    await p2.end();
+    await p3.end();
+  }
 });

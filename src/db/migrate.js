@@ -7,37 +7,39 @@ const LOCK_KEY = 727_001; // advisory lock so concurrent migrators serialize
 
 // Applies pending *.sql migrations in filename order, each in its own transaction.
 // Tracks them in schema_migrations (resolved through the pool's search_path).
+// Serialized with a TRANSACTION-scoped advisory lock: it is released by COMMIT/ROLLBACK
+// (even if the client dies or the connection is pooled), unlike a session-level lock
+// which can leak onto a pooled backend and block every later migrator.
 export async function migrate(pool, dir = DIR) {
   const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
   const client = await pool.connect();
   const applied = [];
   try {
-    await client.query("SELECT pg_advisory_lock($1)", [LOCK_KEY]);
-    await client.query(
-      `CREATE TABLE IF NOT EXISTS schema_migrations (
-         name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
-    );
-    const done = new Set((await client.query("SELECT name FROM schema_migrations")).rows.map((r) => r.name));
     for (const file of files) {
-      if (done.has(file)) continue;
       const sql = await readFile(path.join(dir, file), "utf8");
       try {
         await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock($1)", [LOCK_KEY]);
+        await client.query(
+          `CREATE TABLE IF NOT EXISTS schema_migrations (
+             name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
+        );
+        const done = await client.query("SELECT 1 FROM schema_migrations WHERE name = $1", [file]);
+        if (done.rowCount) {
+          await client.query("COMMIT");
+          continue;
+        }
         await client.query(sql);
         await client.query("INSERT INTO schema_migrations(name) VALUES ($1)", [file]);
         await client.query("COMMIT");
       } catch (err) {
-        await client.query("ROLLBACK");
+        await client.query("ROLLBACK").catch(() => {});
         throw new Error(`Migration ${file} failed: ${err.message}`);
       }
       applied.push(file);
     }
   } finally {
-    try {
-      await client.query("SELECT pg_advisory_unlock($1)", [LOCK_KEY]);
-    } finally {
-      client.release();
-    }
+    client.release();
   }
   return { applied };
 }
