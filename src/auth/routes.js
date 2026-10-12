@@ -20,16 +20,17 @@ const changeBody = z
   })
   .refine((b) => b.currentPassword !== b.newPassword, { message: "New password must differ from the current one" });
 
-// One atomic statement: increments (restarting at 1 if an old lock has expired)
-// and locks the account on reaching the limit.
+// One atomic statement that reads the target row's own columns (no snapshot subquery),
+// so concurrent failures serialize on the row lock and none is lost. Increments
+// (restarting at 1 if an old lock has expired), locks on reaching the limit, and is a
+// no-op while an account is already locked (never extends a lock).
 async function recordFailure(pool, userId) {
+  const next = "CASE WHEN locked_until IS NOT NULL AND locked_until <= now() THEN 1 ELSE failed_attempts + 1 END";
   await pool.query(
-    `UPDATE users u SET failed_attempts = s.n,
-            locked_until = CASE WHEN s.n >= $2 THEN now() + make_interval(mins => $3) ELSE NULL END
-       FROM (SELECT id, CASE WHEN locked_until IS NOT NULL AND locked_until <= now()
-                             THEN 1 ELSE failed_attempts + 1 END AS n
-               FROM users WHERE id = $1) s
-      WHERE u.id = s.id`,
+    `UPDATE users
+        SET failed_attempts = ${next},
+            locked_until = CASE WHEN (${next}) >= $2 THEN now() + make_interval(mins => $3) ELSE NULL END
+      WHERE id = $1 AND (locked_until IS NULL OR locked_until <= now())`,
     [userId, MAX_FAILED_ATTEMPTS, LOCK_MINUTES],
   );
 }
@@ -68,10 +69,15 @@ export function authRouter({ pool }) {
       // Same scrypt work whether or not the user exists / input was valid.
       const ok = await verifyPassword(password, user ? user.password_hash : await dummyHash());
       if (!parsed.success || !user || !ok || user.locked) {
-        if (user && !user.locked && !ok) await recordFailure(pool, user.id);
+        if (user && !ok) await recordFailure(pool, user.id);
         throw new HttpError(401, GENERIC_LOGIN_ERROR);
       }
-      await pool.query("UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = $1", [user.id]);
+      // Decide on fresh state: the lock may have engaged while scrypt was running.
+      const cleared = await pool.query(
+        "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = $1 AND (locked_until IS NULL OR locked_until <= now()) RETURNING id",
+        [user.id],
+      );
+      if (!cleared.rowCount) throw new HttpError(401, GENERIC_LOGIN_ERROR);
       const csrfToken = await startSession(req, user.id);
       res.json({ user: { id: user.id, username: user.username }, csrfToken });
     } catch (err) {
@@ -112,14 +118,15 @@ export function authRouter({ pool }) {
       if (!user) throw new HttpError(401, "Authentication required");
       const ok = await verifyPassword(currentPassword, user.password_hash);
       if (!ok || user.locked) {
-        if (!user.locked && !ok) await recordFailure(pool, user.id);
+        if (!ok) await recordFailure(pool, user.id);
         throw new HttpError(400, "Current password is incorrect");
       }
       const hash = await hashPassword(newPassword);
-      await pool.query(
-        "UPDATE users SET password_hash = $2, failed_attempts = 0, locked_until = NULL WHERE id = $1",
+      const updated = await pool.query(
+        "UPDATE users SET password_hash = $2, failed_attempts = 0, locked_until = NULL WHERE id = $1 AND (locked_until IS NULL OR locked_until <= now()) RETURNING id",
         [user.id, hash],
       );
+      if (!updated.rowCount) throw new HttpError(400, "Current password is incorrect");
       const csrfToken = await startSession(req, user.id);
       // Invalidate every other session of this user.
       await pool.query(`DELETE FROM "session" WHERE sess->>'userId' = $1 AND sid <> $2`, [user.id, req.sessionID]);

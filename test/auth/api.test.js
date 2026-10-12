@@ -288,3 +288,38 @@ test("internal errors return a generic 500 without details", async () => {
     await t2.close();
   }
 });
+
+test("concurrent wrong logins cannot lose lockout updates", async () => {
+  const t2 = await startTestApp();
+  try {
+    await t2.addUser("race");
+    const c = t2.client();
+    await c.fetchCsrf();
+    const rs = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => c.post("/api/auth/login", { username: "race", password: "bad-password-" + i })),
+    );
+    assert.ok(rs.every((r) => r.status === 401));
+    const { rows } = await t2.pool.query("select failed_attempts, locked_until from users where username='race'");
+    assert.equal(rows[0].failed_attempts, 5, "exactly 5 counted; attempts while locked are not counted");
+    assert.ok(rows[0].locked_until > new Date());
+  } finally {
+    await t2.close();
+  }
+});
+
+test("a burst including the correct password never succeeds once the account is locked", async () => {
+  const t2 = await startTestApp();
+  try {
+    await t2.addUser("burst");
+    const c = t2.client();
+    await c.fetchCsrf();
+    for (let i = 0; i < 5; i++) await c.post("/api/auth/login", { username: "burst", password: "bad-password-" + i });
+    const rs = await Promise.all([
+      ...Array.from({ length: 4 }, (_, i) => c.post("/api/auth/login", { username: "burst", password: "bad-x-" + i })),
+      ...Array.from({ length: 4 }, () => c.post("/api/auth/login", { username: "burst", password: TEST_PASSWORD })),
+    ]);
+    assert.ok(rs.every((r) => r.status === 401 && r.json.error === GENERIC));
+  } finally {
+    await t2.close();
+  }
+});
