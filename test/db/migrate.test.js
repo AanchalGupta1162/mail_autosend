@@ -91,12 +91,18 @@ test("concurrent migrators serialize and leave no session-level advisory lock be
   const schema = db.schema;
   const p2 = createPool({ connectionString: directConnectionString(), schema });
   const p3 = createPool({ connectionString: directConnectionString(), schema });
+  // Only look at THIS test's connections: other test files migrate their own schemas in
+  // parallel and legitimately hold the same advisory lock for a moment.
+  const pids = new Set();
+  for (const p of [p2, p3]) p.on("connect", (c) => pids.add(c.processID));
   try {
     const [a, b] = await Promise.all([migrate(p2), migrate(p3)]);
     assert.deepEqual([...a.applied, ...b.applied], []);
     const { rows } = await db.pool.query(
-      "select count(*)::int n from pg_locks where locktype='advisory' and objid=727001 and granted",
+      "select count(*)::int n from pg_locks where locktype='advisory' and objid=727001 and granted and pid = any($1::int[])",
+      [[...pids]],
     );
+    assert.ok(pids.size > 0);
     assert.equal(rows[0].n, 0);
   } finally {
     await p2.end();

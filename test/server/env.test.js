@@ -116,3 +116,9 @@ test("loadAdminSeedConfig validates username and password", () => {
     assert.throws(() => loadAdminSeedConfig({ ADMIN_USERNAME: u, ADMIN_PASSWORD: "abcdefghij" }), /ADMIN_USERNAME/, JSON.stringify(u));
   }
 });
+
+test("POLL_INTERVAL_SECONDS defaults to 30 and must be a positive integer", () => {
+  assert.equal(loadServerConfig(base).pollIntervalSeconds, 30);
+  assert.equal(loadServerConfig({ ...base, POLL_INTERVAL_SECONDS: "5" }).pollIntervalSeconds, 5);
+  assert.throws(() => loadServerConfig({ ...base, POLL_INTERVAL_SECONDS: "0" }), /POLL_INTERVAL_SECONDS/);
+});
