@@ -34,7 +34,7 @@ const poller =
     ? null
     : createPoller({
         intervalMs: config.pollIntervalSeconds * 1000,
-        run: () => runTick({ pool, mailer, config }),
+        run: ({ shouldStop, signal }) => runTick({ pool, mailer, config, shouldStop, signal }),
       });
 poller?.start();
 console.log(`Send worker ${poller ? `polling every ${config.pollIntervalSeconds}s` : "disabled"} (DRY_RUN=${config.dryRun})`);

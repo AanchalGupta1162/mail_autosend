@@ -39,7 +39,7 @@ async function recoverStale(pool, now) {
 // One transaction under an advisory lock: count (rolling 24h, same dry-run mode) -> claim ->
 // store Message-IDs. The cap counts sent rows, rows in flight, and needs_review rows (which may
 // have gone out). Dry-run and real sends are counted separately.
-async function claim(pool, config, now) {
+async function claim(pool, config, now, maxRows = 1) {
   return inTx(pool, async (db) => {
     await db.query("SELECT pg_advisory_xact_lock($1)", [CLAIM_LOCK_KEY]);
     const since = new Date(now.getTime() - DAY_MS);
@@ -49,7 +49,7 @@ async function claim(pool, config, now) {
           AND ((state = 'sent' AND sent_at > $2) OR state = 'sending' OR (state = 'needs_review' AND claimed_at > $2))`,
       [config.dryRun, since],
     );
-    const limit = Math.min(config.maxPerTick, Math.max(0, config.dailySendCap - used.rows[0].n));
+    const limit = Math.min(maxRows, Math.max(0, config.dailySendCap - used.rows[0].n));
     if (limit <= 0) return [];
     const { rows } = await db.query(
       `UPDATE messages SET state = 'sending', claimed_at = $1, attempts = attempts + 1, dry_run = $2, error = NULL
@@ -225,30 +225,55 @@ async function processMessage({ pool, mailer, config, signatureHtml, sendTimeout
   }
 }
 
+// A claimed row that never entered processMessage (stop requested, error in the loop) is handed
+// back untouched, so nothing is left in `sending` to be mistaken for a stale in-flight send.
+async function release(pool, row) {
+  await pool
+    .query(
+      `UPDATE messages SET state = 'scheduled', attempts = attempts - 1, message_id = NULL, claimed_at = NULL
+        WHERE id = $1 AND state = 'sending' AND message_id = $2`,
+      [row.id, row.message_id],
+    )
+    .catch(() => {});
+}
+
 export async function runTick({
   pool,
   mailer,
   config,
   now = () => new Date(),
-  sleep = (ms) => delay(ms),
+  sleep = (ms, signal) => delay(ms, undefined, { signal }).catch(() => {}),
   random = Math.random,
   logger = console,
   sendTimeoutMs = 90_000,
-  onClaimed, // test seam: called after the claim commits, before a message is processed
+  shouldStop = () => false, // set by the poller on shutdown
+  signal, // AbortSignal that wakes the jitter sleep on shutdown
+  onClaimed, // test seam: called after a claim commits, before the message is processed
 }) {
   const clock = typeof now === "function" ? now : () => now;
   const summary = { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, retried: 0, failed: 0, needsReview: 0 };
   summary.staleRecovered = await recoverStale(pool, clock());
-  const claimed = await claim(pool, config, clock());
-  summary.claimed = claimed.length;
   const ctx = { pool, mailer, config, signatureHtml: loadSignature(config), sendTimeoutMs, logger };
   let attemptedBefore = false;
-  for (const row of claimed) {
-    if (onClaimed) await onClaimed(row);
-    if (attemptedBefore) {
-      const min = config.sendGapSecondsMin;
-      const max = Math.max(min, config.sendGapSecondsMax);
-      await sleep(Math.round((min + random() * (max - min)) * 1000));
+  // One message per iteration: only the row in flight is ever in `sending`; cap and the
+  // per-tick limit are re-evaluated before every claim.
+  for (let i = 0; i < config.maxPerTick; i++) {
+    if (shouldStop()) break;
+    const [row] = await claim(pool, config, clock(), 1);
+    if (!row) break;
+    summary.claimed += 1;
+    let entered = false;
+    try {
+      if (onClaimed) await onClaimed(row);
+      if (attemptedBefore) {
+        const min = config.sendGapSecondsMin;
+        const max = Math.max(min, config.sendGapSecondsMax);
+        await sleep(Math.round((min + random() * (max - min)) * 1000), signal);
+      }
+      if (shouldStop()) break;
+      entered = true;
+    } finally {
+      if (!entered) await release(pool, row);
     }
     const result = await processMessage(ctx, row, clock);
     if (result in summary) summary[result] += 1;

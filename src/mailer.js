@@ -5,6 +5,11 @@ export function createTransport({ gmailUser, gmailAppPassword }) {
   return nodemailer.createTransport({
     service: "gmail",
     auth: { user: gmailUser, pass: gmailAppPassword },
+    // All strictly below the worker's 90 s send timeout, so nodemailer reports its own (classified)
+    // error before the worker gives up on the call.
+    connectionTimeout: 30_000,
+    greetingTimeout: 30_000,
+    socketTimeout: 60_000,
   });
 }
 

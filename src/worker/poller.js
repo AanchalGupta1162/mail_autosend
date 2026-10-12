@@ -8,13 +8,14 @@ export function createPoller({ run, intervalMs = 30_000, logger = defaultLogger 
   let timer = null;
   let running = null;
   let stopped = true;
+  let abort = new AbortController();
 
   async function cycle() {
     timer = null;
     if (stopped) return;
     running = (async () => {
       try {
-        await run();
+        await run({ shouldStop: () => stopped, signal: abort.signal });
       } catch (err) {
         logger.error(`poller tick failed: ${err?.name ?? "Error"} ${err?.code ?? ""}`.trim());
       }
@@ -28,10 +29,12 @@ export function createPoller({ run, intervalMs = 30_000, logger = defaultLogger 
     start() {
       if (!stopped) return;
       stopped = false;
+      abort = new AbortController();
       timer = setTimeout(cycle, 0);
     },
     async stop() {
       stopped = true;
+      abort.abort();
       if (timer) clearTimeout(timer);
       timer = null;
       if (running) await running;

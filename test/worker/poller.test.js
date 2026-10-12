@@ -59,3 +59,21 @@ test("stop waits for the in-flight tick and prevents further ticks; start is ide
   assert.equal(runs, after);
   await p.stop(); // idempotent
 });
+
+test("stop() raises shouldStop and aborts the signal so a long tick can wind down", async () => {
+  let sawStop = false, sawAbort = false;
+  const p = createPoller({
+    intervalMs: 5,
+    logger: quiet(),
+    run: async ({ shouldStop, signal }) => {
+      await new Promise((r) => signal.addEventListener("abort", r, { once: true }));
+      sawAbort = signal.aborted;
+      sawStop = shouldStop();
+    },
+  });
+  p.start();
+  await wait(20);
+  await p.stop();
+  assert.equal(sawAbort, true);
+  assert.equal(sawStop, true);
+});

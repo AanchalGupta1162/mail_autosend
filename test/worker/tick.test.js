@@ -8,6 +8,7 @@ import { markReplied, optOut } from "../../src/domain/contacts.js";
 import { syncFollowup } from "../../src/domain/schedule.js";
 import { putTemplate } from "../../src/domain/template.js";
 import { createMailer } from "../../src/mailer.js";
+import { startFakeSmtp, closedPort } from "../helpers/smtp.js";
 
 let db, pool;
 before(async () => {
@@ -426,4 +427,119 @@ test("a failed follow-up leaves the contact 'sent' and is recorded", async () =>
 test("a tick with nothing due is a no-op summary", async () => {
   const s = await tick();
   assert.deepEqual(s, { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, retried: 0, failed: 0, needsReview: 0 });
+});
+
+async function threeDue() {
+  const emails = Array.from({ length: 3 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  const msgs = [];
+  for (const [i, c] of contacts.entries()) msgs.push(await addMessage(pool, c.id, { scheduledFor: new Date(Date.now() - (10 - i) * 60_000) }));
+  return msgs;
+}
+const states = async () => (await pool.query("select state, attempts, message_id, claimed_at from messages order by scheduled_for")).rows;
+
+test("shutdown: stop requested after the first send leaves the other claimed-able rows `scheduled`, never `sending`", async () => {
+  await threeDue();
+  let stop = false;
+  const m = fakeMailer({ onSend: async () => { stop = true; } });
+  const s = await tick({ mailer: m, extra: { shouldStop: () => stop } });
+  assert.equal(m.calls.length, 1);
+  assert.equal(s.sent, 1);
+  const rows = await states();
+  assert.deepEqual(rows.map((r) => r.state), ["sent", "scheduled", "scheduled"]);
+  assert.deepEqual(rows.slice(1).map((r) => [r.attempts, r.message_id, r.claimed_at]), [[0, null, null], [0, null, null]]);
+});
+
+test("shutdown during the jitter sleep releases the row it had already claimed", async () => {
+  await threeDue();
+  let stop = false;
+  const s = await tick({ extra: { shouldStop: () => stop }, sleep: async () => { stop = true; } });
+  assert.equal(s.sent, 1);
+  assert.deepEqual((await states()).map((r) => r.state), ["sent", "scheduled", "scheduled"]);
+});
+
+test("an error thrown mid-loop leaves no unprocessed row in `sending`", async () => {
+  await threeDue();
+  let n2 = 0;
+  await assert.rejects(tick({ extra: { onClaimed: async () => { if (++n2 === 2) throw new Error("boom"); } } }), /boom/);
+  const rows = await states();
+  assert.deepEqual(rows.map((r) => r.state), ["sent", "scheduled", "scheduled"]);
+  assert.equal(rows[1].attempts, 0);
+  assert.equal(rows[1].message_id, null);
+});
+
+test("only one message is ever in flight: a claimed batch is not pre-claimed", async () => {
+  await threeDue();
+  const seen = [];
+  const m = fakeMailer({ onSend: async () => { seen.push((await states()).filter((r) => r.state === "sending").length); } });
+  await tick({ mailer: m });
+  assert.deepEqual(seen, [1, 1, 1]);
+});
+
+// ---- integration: real nodemailer against a scripted local SMTP server -----------------------
+test("REAL SMTP (d1): server accepts DATA then drops the socket -> needs_review, exactly one DATA connection, never resent", async () => {
+  const smtp = await startFakeSmtp("die-after-data");
+  try {
+    const { msg } = await dueInitial();
+    const mailer = smtp.transport();
+    let clock = Date.now();
+    const now = () => new Date(clock);
+    const s = await tick({ mailer, now });
+    assert.equal(s.needsReview, 1);
+    assert.equal((await msgRow(msg.id)).state, "needs_review");
+    for (let i = 0; i < 3; i++) {
+      clock += 3 * 3600_000;
+      await tick({ mailer, now });
+    }
+    assert.equal(smtp.state.dataConnections, 1);
+    assert.equal((await msgRow(msg.id)).state, "needs_review");
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("REAL SMTP (d2): server replies 250 then closes abruptly -> delivered once, recorded sent, no further sends", async () => {
+  const smtp = await startFakeSmtp("reply-then-die");
+  try {
+    const { msg } = await dueInitial();
+    const mailer = smtp.transport();
+    await tick({ mailer });
+    await tick({ mailer, now: () => new Date(Date.now() + 3 * 3600_000) });
+    assert.equal(smtp.state.dataConnections, 1);
+    // nodemailer saw the 250 before the close, so a sent row is the truthful outcome
+    assert.equal((await msgRow(msg.id)).state, "sent");
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("REAL SMTP (d3): RCPT TO 550 -> failed immediately, contact failed, DATA never reached", async () => {
+  const smtp = await startFakeSmtp("reject-rcpt");
+  try {
+    const { contact, msg } = await dueInitial();
+    const mailer = smtp.transport();
+    const s = await tick({ mailer });
+    assert.equal(s.failed, 1);
+    const row = await msgRow(msg.id);
+    assert.equal(row.state, "failed");
+    assert.equal(row.attempts, 1);
+    assert.equal((await contactRow(contact.id)).status, "failed");
+    assert.equal(smtp.state.dataConnections, 0);
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("REAL SMTP (d4): connection refused -> back to scheduled with backoff and attempts+1", async () => {
+  const port = await closedPort();
+  const { msg } = await dueInitial();
+  const { default: nodemailer } = await import("nodemailer");
+  const refused = nodemailer.createTransport({ host: "127.0.0.1", port, secure: false, ignoreTLS: true });
+  const t0 = Date.now();
+  const s = await tick({ mailer: refused });
+  assert.equal(s.retried, 1);
+  const row = await msgRow(msg.id);
+  assert.equal(row.state, "scheduled");
+  assert.equal(row.attempts, 1);
+  assert.ok(row.scheduled_for.getTime() > t0 + 60_000);
 });
