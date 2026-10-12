@@ -8,6 +8,13 @@ export function createTransport({ gmailUser, gmailAppPassword }) {
   });
 }
 
+// DRY_RUN uses nodemailer's jsonTransport: the full message (including its Message-ID) is
+// built but nothing is delivered. Otherwise the real Gmail transport.
+export function createMailer(config) {
+  if (config.dryRun) return nodemailer.createTransport({ jsonTransport: true });
+  return createTransport(config);
+}
+
 function buildFrom(config) {
   return config.fromName ? { name: config.fromName, address: config.gmailUser } : config.gmailUser;
 }
