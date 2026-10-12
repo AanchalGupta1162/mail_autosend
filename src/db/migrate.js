@@ -49,7 +49,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.error("DATABASE_URL is required");
     process.exit(1);
   }
-  const pool = createPool({ connectionString: process.env.DATABASE_URL, max: 1 });
+  // Explicit schema: some Postgres roles have no default search_path.
+  const pool = createPool({ connectionString: process.env.DATABASE_URL, schema: process.env.DB_SCHEMA || "public", max: 1 });
   try {
     const { applied } = await migrate(pool);
     console.log(applied.length ? `Applied: ${applied.join(", ")}` : "Up to date.");
