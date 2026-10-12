@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadServerConfig } from "../../src/server/env.js";
+import { loadServerConfig, loadAdminSeedConfig } from "../../src/server/env.js";
 
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/db",
@@ -97,5 +97,22 @@ test(".env.example placeholders are rejected by validation", async () => {
     () => loadServerConfig({ DATABASE_URL: get("DATABASE_URL"), SESSION_SECRET: get("SESSION_SECRET") }),
     /SESSION_SECRET/,
   );
-  assert.ok(get("ADMIN_PASSWORD").length < 10, "ADMIN_PASSWORD placeholder must fail the 10-char minimum");
+  assert.throws(
+    () => loadAdminSeedConfig({ ADMIN_USERNAME: get("ADMIN_USERNAME"), ADMIN_PASSWORD: get("ADMIN_PASSWORD") }),
+    /ADMIN_PASSWORD/,
+  );
+});
+
+test("loadAdminSeedConfig validates username and password", () => {
+  const ok = loadAdminSeedConfig({ ADMIN_USERNAME: "admin", ADMIN_PASSWORD: "abcdefghij" });
+  assert.deepEqual(ok, { username: "admin", password: "abcdefghij" });
+  assert.throws(() => loadAdminSeedConfig({ ADMIN_USERNAME: "admin", ADMIN_PASSWORD: "" }), /ADMIN_PASSWORD/);
+  assert.throws(() => loadAdminSeedConfig({ ADMIN_USERNAME: "admin" }), /ADMIN_PASSWORD/);
+  assert.throws(
+    () => loadAdminSeedConfig({ ADMIN_USERNAME: "admin", ADMIN_PASSWORD: "123456789" }),
+    (e) => /ADMIN_PASSWORD/.test(e.message) && !e.message.includes("123456789"),
+  );
+  for (const u of ["ab", "ad min", "adm\nin", ""]) {
+    assert.throws(() => loadAdminSeedConfig({ ADMIN_USERNAME: u, ADMIN_PASSWORD: "abcdefghij" }), /ADMIN_USERNAME/, JSON.stringify(u));
+  }
 });

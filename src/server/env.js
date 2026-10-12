@@ -77,3 +77,23 @@ export function loadServerConfig(env = process.env) {
     signaturePath: e.SIGNATURE_PATH?.trim() || undefined,
   };
 }
+
+const adminSchema = z.object({
+  ADMIN_USERNAME: z
+    .string({ error: "ADMIN_USERNAME is required" })
+    .min(3, "ADMIN_USERNAME must be at least 3 characters")
+    .regex(/^[^\s\p{Cc}]+$/u, "ADMIN_USERNAME must not contain whitespace or control characters"),
+  ADMIN_PASSWORD: z
+    .string({ error: "ADMIN_PASSWORD is required" })
+    .min(10, "ADMIN_PASSWORD must be at least 10 characters"),
+});
+
+// Used by scripts/seedAdmin.js. Errors name the variable, never echo its value.
+export function loadAdminSeedConfig(env = process.env) {
+  const result = adminSchema.safeParse(env);
+  if (!result.success) {
+    const msg = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`Invalid admin configuration: ${msg}`);
+  }
+  return { username: result.data.ADMIN_USERNAME, password: result.data.ADMIN_PASSWORD };
+}
