@@ -1,12 +1,12 @@
 ---
 name: formatting-email-csv
-description: Use when drafted recruiter/outreach emails (initial or follow-up) need to be put into the CSV that feeds the mail-autosend sheet, or when a drafted-email CSV needs checking before import.
+description: Use when drafted recruiter/outreach emails (initial or follow-up) need to be put into the CSV that is uploaded to the mail-autosend dashboard, or when a drafted-email CSV needs checking before import.
 ---
 
 # Formatting Drafted Emails as CSV
 
 ## Overview
-mail-autosend reads one row per recipient (see `src/excel.js`). This skill turns drafted emails into a CSV whose columns, quoting and text markup match that schema exactly. The app reads `.csv` directly: point `EXCEL_PATH` in `.env` at the file. It writes `Status`, `Message ID` etc. back into the same CSV, so edit it in a plain text editor or re-import carefully while a run is not in progress.
+mail-autosend imports one row per recipient (see `src/import/parseCsv.js`). This skill turns drafted emails into a CSV whose columns, quoting and text markup match that schema exactly. Upload the file on the dashboard's Upload page (`POST /api/batches`); status is tracked in the database, never written back to the CSV.
 
 ## Columns (exact header text, this order)
 `Company,Role,Person,Email,Subject,Mail Text,Follow-up Text`
@@ -16,12 +16,12 @@ mail-autosend reads one row per recipient (see `src/excel.js`). This skill turns
 | Company | yes | Plain text |
 | Role | yes | Plain text, e.g. `Software Engineer Intern` |
 | Person | yes | Recipient's full name |
-| Email | yes | One valid address; rows with blank Email are skipped by the app |
+| Email | yes | One valid address; rows with a missing or invalid Email are rejected and reported |
 | Subject | yes | Plain text, no `**`, no newlines. Pattern: `<Role> role at <Company>` |
 | Mail Text | yes | Body of the initial email (format below) |
 | Follow-up Text | no | Body of follow-ups; leave empty to never follow up |
 
-Do NOT include `Status, Message ID, Last Sent At, Follow-up Count, Error` — the app adds and owns them.
+Do NOT include status columns (`Status, Message ID, Last Sent At, Follow-up Count, Error`); the app tracks state in its database.
 
 ## Text formatting (Mail Text and Follow-up Text)
 - Plain text only. The app converts it to HTML: `\n` becomes a line break, HTML is escaped.

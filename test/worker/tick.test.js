@@ -1,0 +1,714 @@
+import { test, before, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import path from "node:path";
+import nodemailer from "nodemailer";
+import { createTestDb } from "../helpers/db.js";
+import { seedBatch, addMessage } from "../helpers/seed.js";
+import { runTick } from "../../src/worker/tick.js";
+import { markReplied, optOut } from "../../src/domain/contacts.js";
+import { syncFollowup } from "../../src/domain/schedule.js";
+import { putTemplate } from "../../src/domain/template.js";
+import { createMailer } from "../../src/mailer.js";
+import { startFakeSmtp, closedPort } from "../helpers/smtp.js";
+
+let db, pool;
+before(async () => {
+  db = await createTestDb();
+  pool = db.pool;
+});
+after(async () => db?.close());
+beforeEach(async () => {
+  await pool.query("TRUNCATE batches, suppressions, events RESTART IDENTITY CASCADE");
+  await pool.query("DELETE FROM settings WHERE key = 'send_hold'");
+  await pool.query("UPDATE settings SET value = jsonb_build_object('subject','Re: {{subject}}','body', E'Hi {{firstName}},\\n\\nJust following up on my note about the {{role}} role at {{company}}. Happy to share anything that would help.\\n\\nBest,\\nHarshavardhan Khamkar') WHERE key='followup_template'");
+});
+
+const D = 86_400_000;
+const baseConfig = {
+  dryRun: false,
+  resumePath: path.resolve("test/fixtures/resume.pdf"), // real sends need a resume (library snapshot or this legacy file)
+  dailySendCap: 100,
+  maxPerTick: 5,
+  sendGapSecondsMin: 15,
+  sendGapSecondsMax: 45,
+  gmailUser: "me@example.com",
+  fromName: "Harsh",
+};
+const noSleep = async () => {};
+const silent = { error() {}, warn() {}, info() {} };
+
+function fakeMailer({ fail, delayMs = 0, onSend } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async sendMail(opts) {
+      calls.push(opts);
+      if (onSend) await onSend(opts);
+      if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+      const f = typeof fail === "function" ? fail(opts, calls.length) : fail;
+      if (f) throw f;
+      return { messageId: opts.messageId };
+    },
+  };
+}
+const tick = (o = {}) =>
+  runTick({ pool, mailer: o.mailer ?? fakeMailer(), config: { ...baseConfig, ...(o.config ?? {}) }, now: o.now ?? (() => new Date()), sleep: o.sleep ?? noSleep, logger: silent, ...(o.extra ?? {}) });
+
+let n = 0;
+const em = () => `w${++n}@example.com`;
+// One contact that is scheduled with a due initial message.
+async function dueInitial(overrides = {}, msg = {}) {
+  const email = em();
+  const { contacts } = await seedBatch(pool, [email], { overrides: { [email]: { status: "scheduled", ...overrides } } });
+  const m = await addMessage(pool, contacts[0].id, msg);
+  return { contact: contacts[0], msg: m, email };
+}
+// A contact whose initial was already sent (status sent), ready for a follow-up.
+async function sentContact(overrides = {}, initial = {}) {
+  return dueInitial(
+    { status: "sent", ...overrides },
+    { state: "sent", sentAt: new Date(Date.now() - 10 * D), messageId: "<i@x>", scheduledFor: new Date(Date.now() - 10 * D), ...initial },
+  );
+}
+const msgRow = async (id) => (await pool.query("select * from messages where id=$1", [id])).rows[0];
+const contactRow = async (id) => (await pool.query("select * from contacts where id=$1", [id])).rows[0];
+
+test("sends a due initial: Message-ID stored BEFORE the SMTP call and reused for it; contact becomes sent", async () => {
+  const { contact, msg, email } = await dueInitial();
+  let seenDuring;
+  const mailer = fakeMailer({
+    onSend: async (opts) => {
+      seenDuring = await msgRow(msg.id);
+      assert.equal(seenDuring.state, "sending");
+      assert.equal(seenDuring.message_id, opts.messageId);
+    },
+  });
+  const s = await tick({ mailer });
+  assert.equal(s.sent, 1);
+  assert.equal(mailer.calls.length, 1);
+  assert.equal(mailer.calls[0].to, email);
+  assert.match(mailer.calls[0].messageId, /^<[0-9a-f-]{36}@[^>]+>$/);
+  const m = await msgRow(msg.id);
+  assert.equal(m.state, "sent");
+  assert.equal(m.message_id, mailer.calls[0].messageId);
+  assert.equal(m.attempts, 1);
+  assert.equal(m.dry_run, false);
+  assert.ok(m.sent_at);
+  assert.equal((await contactRow(contact.id)).status, "sent");
+  assert.equal(Number((await pool.query("select count(*) n from events where type='sent' and contact_id=$1", [contact.id])).rows[0].n), 1);
+});
+
+test("only due scheduled messages are sent; injected clock decides", async () => {
+  const future = await dueInitial({}, { scheduledFor: new Date(Date.now() + 3600_000) });
+  const m = fakeMailer();
+  assert.equal((await tick({ mailer: m })).sent, 0);
+  assert.equal(m.calls.length, 0);
+  assert.equal((await tick({ mailer: m, now: () => new Date(Date.now() + 2 * 3600_000) })).sent, 1);
+  assert.equal((await msgRow(future.msg.id)).state, "sent");
+});
+
+test("the legacy resume file is read before sending and attached as bytes with its own name", async () => {
+  await dueInitial();
+  const m = fakeMailer();
+  const file = path.resolve("test/fixtures/resume.pdf");
+  await tick({ mailer: m, config: { resumePath: file } });
+  assert.equal(m.calls[0].attachments.length, 1);
+  assert.equal(m.calls[0].attachments[0].filename, "resume.pdf");
+  assert.equal(m.calls[0].attachments[0].contentType, "application/pdf");
+  assert.ok(Buffer.isBuffer(m.calls[0].attachments[0].content) && m.calls[0].attachments[0].content.length > 0);
+});
+
+test("DRY_RUN with a real jsonTransport builds a real Message-ID, delivers nothing and sets dry_run", async () => {
+  const { msg } = await dueInitial();
+  const mailer = createMailer({ dryRun: true });
+  const s = await tick({ mailer, config: { dryRun: true } });
+  assert.equal(s.sent, 1);
+  const m = await msgRow(msg.id);
+  assert.equal(m.state, "sent");
+  assert.equal(m.dry_run, true);
+  assert.match(m.message_id, /^<.+@.+>$/);
+  assert.equal(mailer.transporter?.name ?? mailer.name, "JSONTransport");
+});
+
+for (const [label, setup] of [
+  ["replied", (c) => pool.query("update contacts set status='replied' where id=$1", [c.id])],
+  ["opted_out", (c) => pool.query("update contacts set status='opted_out' where id=$1", [c.id])],
+  ["bounced", (c) => pool.query("update contacts set status='bounced' where id=$1", [c.id])],
+  ["failed", (c) => pool.query("update contacts set status='failed' where id=$1", [c.id])],
+  ["suppressed", (c) => pool.query("insert into suppressions(email) values (lower($1))", [c.email])],
+  ["same email replied in another batch", async (c) => { await seedBatch(pool, [c.email.toUpperCase()], { overrides: { [c.email.toUpperCase()]: { status: "replied" } } }); }],
+]) {
+  test(`(b) recheck: due message for a ${label} contact is cancelled with an error and never sent`, async () => {
+    const { contact, msg } = await dueInitial();
+    await setup(contact);
+    const m = fakeMailer();
+    const s = await tick({ mailer: m });
+    assert.equal(m.calls.length, 0);
+    assert.equal(s.sent, 0);
+    assert.equal(s.cancelled, 1);
+    const row = await msgRow(msg.id);
+    assert.equal(row.state, "cancelled");
+    assert.match(row.error, /./);
+  });
+}
+
+test("(b) race: markReplied / optOut between claim and send leave the in-flight row alone, but the worker re-check stops the send", async () => {
+  for (const act of [(id) => markReplied(pool, id), (id) => optOut(pool, id)]) {
+    const { contact, msg } = await dueInitial();
+    const m = fakeMailer();
+    await tick({ mailer: m, extra: { onClaimed: async () => { await act(contact.id); } } });
+    assert.equal(m.calls.length, 0);
+    assert.equal((await msgRow(msg.id)).state, "cancelled");
+  }
+});
+
+test("(b) race: a row taken over (needs_review) or cancelled after claim is not sent by this worker", async () => {
+  const { msg } = await dueInitial();
+  const m = fakeMailer();
+  await tick({ mailer: m, extra: { onClaimed: async () => { await pool.query("update messages set state='needs_review' where id=$1", [msg.id]); } } });
+  assert.equal(m.calls.length, 0);
+  assert.equal((await msgRow(msg.id)).state, "needs_review");
+});
+
+test("(d) a sending row older than 10 minutes becomes needs_review and is never resent; a younger one is untouched", async () => {
+  const old = await dueInitial({}, { state: "sending", claimedAt: new Date(Date.now() - 11 * 60_000), messageId: "<old@x>" });
+  const young = await dueInitial({}, { state: "sending", claimedAt: new Date(Date.now() - 5 * 60_000), messageId: "<young@x>" });
+  const m = fakeMailer();
+  const s = await tick({ mailer: m });
+  await tick({ mailer: m });
+  assert.equal(s.staleRecovered, 1);
+  assert.equal(m.calls.length, 0);
+  assert.equal((await msgRow(old.msg.id)).state, "needs_review");
+  assert.equal((await msgRow(young.msg.id)).state, "sending");
+});
+
+test("(d) retries only when nothing was sent: up to 3 attempts with backoff, then failed", async () => {
+  const { contact, msg } = await dueInitial();
+  const authErr = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:25"), { code: "ESOCKET", command: "CONN", syscall: "connect" });
+  const m = fakeMailer({ fail: authErr });
+  let clock = Date.now();
+  const now = () => new Date(clock);
+
+  let s = await tick({ mailer: m, now });
+  assert.equal(s.retried, 1);
+  let row = await msgRow(msg.id);
+  assert.equal(row.state, "scheduled");
+  assert.equal(row.attempts, 1);
+  assert.ok(row.scheduled_for.getTime() > clock, "backoff pushes scheduled_for into the future");
+  assert.match(row.error, /ESOCKET/);
+
+  assert.equal((await tick({ mailer: m, now })).sent + m.calls.length - 1, 0, "not due again yet");
+  clock += 60 * 60_000;
+  await tick({ mailer: m, now });
+  row = await msgRow(msg.id);
+  assert.equal(row.attempts, 2);
+  assert.equal(row.state, "scheduled");
+  clock += 60 * 60_000;
+  s = await tick({ mailer: m, now });
+  row = await msgRow(msg.id);
+  assert.equal(row.attempts, 3);
+  assert.equal(row.state, "failed");
+  assert.equal(s.failed, 1);
+  assert.equal(m.calls.length, 3);
+  // A retry keeps the Message-ID stored on first claim, so threading and reply matching stay consistent.
+  assert.equal(new Set(m.calls.map((x) => x.messageId)).size, 1);
+  const c = await contactRow(contact.id);
+  assert.equal(c.status, "failed");
+  assert.match(c.error, /ESOCKET/);
+  clock += 24 * 60 * 60_000;
+  await tick({ mailer: m, now });
+  assert.equal(m.calls.length, 3, "never retried after failed");
+});
+
+test("(d) ambiguous failure after DATA goes to needs_review and is never retried or resent", async () => {
+  const { contact, msg } = await dueInitial();
+  const m = fakeMailer({ fail: Object.assign(new Error("socket closed"), { code: "ESOCKET", command: "DATA" }) });
+  let clock = Date.now();
+  const s = await tick({ mailer: m, now: () => new Date(clock) });
+  assert.equal(s.needsReview, 1);
+  const row = await msgRow(msg.id);
+  assert.equal(row.state, "needs_review");
+  assert.match(row.error, /ESOCKET/);
+  clock += 7 * D;
+  await tick({ mailer: m, now: () => new Date(clock) });
+  assert.equal(m.calls.length, 1);
+  assert.equal((await contactRow(contact.id)).status, "scheduled", "contact is not marked sent or failed when delivery is unknown");
+});
+
+test("a send that hangs past the timeout is ambiguous, not retried", async () => {
+  const { msg } = await dueInitial();
+  const m = fakeMailer({ delayMs: 200 });
+  const s = await tick({ mailer: m, extra: { sendTimeoutMs: 20 } });
+  assert.equal(s.needsReview, 1);
+  assert.equal((await msgRow(msg.id)).state, "needs_review");
+});
+
+test("permanent recipient rejection fails immediately without retry", async () => {
+  const { contact, msg } = await dueInitial();
+  const m = fakeMailer({ fail: Object.assign(new Error("no such user"), { code: "EENVELOPE", command: "RCPT TO", responseCode: 550 }) });
+  await tick({ mailer: m });
+  assert.equal((await msgRow(msg.id)).state, "failed");
+  assert.equal((await contactRow(contact.id)).status, "failed");
+  assert.equal(m.calls.length, 1);
+});
+
+test("(e) concurrent ticks never send the same message", async () => {
+  const emails = Array.from({ length: 8 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of contacts) await addMessage(pool, c.id);
+  const m = fakeMailer({ delayMs: 15 });
+  const results = await Promise.all([1, 2, 3].map(() => tick({ mailer: m, config: { maxPerTick: 4 } })));
+  const to = m.calls.map((c) => c.to);
+  assert.equal(new Set(to).size, to.length, "no recipient mailed twice");
+  assert.equal(new Set(m.calls.map((c) => c.messageId)).size, m.calls.length);
+  assert.equal(to.length, 8);
+  assert.equal(results.reduce((a, r) => a + r.sent, 0), 8);
+  const rows = (await pool.query("select state, attempts from messages")).rows;
+  assert.ok(rows.every((r) => r.state === "sent" && r.attempts === 1));
+});
+
+test("(e) concurrent ticks with a large per-tick limit still send each of a few messages once", async () => {
+  const emails = Array.from({ length: 3 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of contacts) await addMessage(pool, c.id);
+  const m = fakeMailer({ delayMs: 10 });
+  await Promise.all([1, 2, 3, 4].map(() => tick({ mailer: m, config: { maxPerTick: 50 } })));
+  assert.equal(m.calls.length, 3);
+});
+
+test("(f) MAX_PER_TICK limits a tick and the jitter gap goes through the injected sleep", async () => {
+  const emails = Array.from({ length: 5 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of contacts) await addMessage(pool, c.id);
+  const sleeps = [];
+  const m = fakeMailer();
+  const s = await tick({ mailer: m, config: { maxPerTick: 3 }, sleep: async (ms) => void sleeps.push(ms), extra: { random: () => 0.5 } });
+  assert.equal(s.sent, 3);
+  assert.equal(sleeps.length, 2, "gap only between sends");
+  assert.ok(sleeps.every((ms) => ms === 30_000), sleeps.join());
+  const s2 = await tick({ mailer: m, config: { maxPerTick: 3 } });
+  assert.equal(s2.sent, 2);
+});
+
+test("(f2) a shared pacing object carries the gap across rounds; without one each call starts fresh (polling)", async () => {
+  const emails = Array.from({ length: 4 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of contacts) await addMessage(pool, c.id);
+  const sleeps = [];
+  const sleep = async (ms) => void sleeps.push(ms);
+  const m = fakeMailer();
+  const pacing = {};
+  const opts = { mailer: m, config: { maxPerTick: 2 }, sleep, extra: { random: () => 0.5, pacing } };
+  const r1 = await tick(opts);
+  assert.equal(r1.sent, 2);
+  assert.equal(sleeps.length, 1, "round one: gap only between its two sends");
+  const r2 = await tick(opts);
+  assert.equal(r2.sent, 2);
+  assert.equal(sleeps.length, 3, "round two sleeps before its first send as well as between its sends");
+  assert.ok(sleeps.every((ms) => ms === 30_000));
+  // polling mode (no shared state): each call starts without a gap, as before
+  const more = Array.from({ length: 2 }, em);
+  const { contacts: c2 } = await seedBatch(pool, more, { overrides: Object.fromEntries(more.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of c2) await addMessage(pool, c.id);
+  sleeps.length = 0;
+  const r3 = await tick({ mailer: m, config: { maxPerTick: 1 }, sleep, extra: { random: () => 0.5 } });
+  const r4 = await tick({ mailer: m, config: { maxPerTick: 1 }, sleep, extra: { random: () => 0.5 } });
+  assert.equal(r3.sent + r4.sent, 2);
+  assert.equal(sleeps.length, 0);
+});
+
+test("(f) DAILY_SEND_CAP is a rolling 24h count of real sends; dry-run sends have their own counter", async () => {
+  const mk = async (state, sentAt, dryRun) => {
+    const { contact } = await dueInitial({ status: "sent" }, { state, sentAt, dryRun, scheduledFor: new Date(Date.now() - 3 * D) });
+    return contact;
+  };
+  await mk("sent", new Date(Date.now() - 3600_000), false); // counts (real)
+  await mk("sent", new Date(Date.now() - 30 * 3600_000), false); // older than 24h: no
+  await mk("sent", new Date(Date.now() - 3600_000), true); // dry-run: not counted against real cap
+  for (let i = 0; i < 4; i++) await dueInitial();
+  const m = fakeMailer();
+  const s = await tick({ mailer: m, config: { dailySendCap: 3 } });
+  assert.equal(s.sent, 2, "3 cap - 1 real send in last 24h");
+  assert.equal((await tick({ mailer: m, config: { dailySendCap: 3 } })).sent, 0);
+  assert.equal(m.calls.length, 2);
+
+  // in dry-run mode only dry-run rows count: 1 dry-run in last 24h + the 0 new ones => cap 3 lets 2 more of the remaining 2 through
+  const dm = fakeMailer();
+  const sd = await tick({ mailer: dm, config: { dryRun: true, dailySendCap: 3 } });
+  assert.equal(sd.sent, 2);
+});
+
+test("(f) DAILY_SEND_CAP=0 sends nothing; in-flight rows count against the cap", async () => {
+  await dueInitial();
+  const m = fakeMailer();
+  assert.equal((await tick({ mailer: m, config: { dailySendCap: 0 } })).sent, 0);
+  await dueInitial({}, { state: "sending", claimedAt: new Date(), messageId: "<fl@x>" });
+  assert.equal((await tick({ mailer: m, config: { dailySendCap: 1 } })).sent, 0);
+  assert.equal(m.calls.length, 0);
+});
+
+test("follow-up requested before send: created right after the initial is sent, at sent_at + delay", async () => {
+  const { contact, msg } = await dueInitial({ followup_requested: true, followup_delay_days: 5 });
+  const nowDate = new Date();
+  await tick({ now: () => nowDate });
+  const fu = (await pool.query("select * from messages where contact_id=$1 and kind='followup'", [contact.id])).rows;
+  assert.equal(fu.length, 1);
+  assert.equal(fu[0].state, "scheduled");
+  assert.equal(fu[0].scheduled_for.getTime(), nowDate.getTime() + 5 * D);
+  assert.equal((await msgRow(msg.id)).sent_at.getTime(), nowDate.getTime());
+  await tick({ now: () => nowDate }); // idempotent: nothing more is created
+  assert.equal((await pool.query("select 1 from messages where contact_id=$1 and kind='followup'", [contact.id])).rowCount, 1);
+});
+
+test("no follow-up is created when it was not requested", async () => {
+  const { contact } = await dueInitial();
+  await tick();
+  assert.equal((await pool.query("select 1 from messages where contact_id=$1 and kind='followup'", [contact.id])).rowCount, 0);
+});
+
+test("(c) reply landing while the initial is in flight: no follow-up survives", async () => {
+  const { contact } = await dueInitial({ followup_requested: true, followup_delay_days: 1 });
+  let pending;
+  const m = fakeMailer({ onSend: async () => { pending = markReplied(pool, contact.id); await new Promise((r) => setTimeout(r, 30)); } });
+  await tick({ mailer: m });
+  await pending;
+  const rows = (await pool.query("select kind, state from messages where contact_id=$1 order by kind", [contact.id])).rows;
+  assert.deepEqual(rows.filter((r) => r.kind === "followup").map((r) => r.state).filter((s) => s !== "cancelled"), []);
+  const c = await contactRow(contact.id);
+  assert.equal(c.status, "replied");
+  assert.equal(c.followup_requested, false);
+});
+
+test("(c) a due follow-up is not sent when the checkbox was unticked, nor for replied/opted-out/suppressed contacts", async () => {
+  for (const [label, prep] of [
+    ["unticked", (c) => pool.query("update contacts set followup_requested=false where id=$1", [c.id])],
+    ["replied", (c) => pool.query("update contacts set status='replied' where id=$1", [c.id])],
+    ["opted_out", (c) => pool.query("update contacts set status='opted_out' where id=$1", [c.id])],
+    ["suppressed", (c) => pool.query("insert into suppressions(email) values (lower($1))", [c.email])],
+  ]) {
+    const { contact } = await sentContact({ followup_requested: true });
+    const f = await addMessage(pool, contact.id, { kind: "followup" });
+    await prep(contact);
+    const m = fakeMailer();
+    await tick({ mailer: m });
+    assert.equal(m.calls.length, 0, label);
+    assert.equal((await msgRow(f.id)).state, "cancelled", label);
+  }
+});
+
+test("unticking via the API path cancels the pending follow-up so the worker never sends it", async () => {
+  const { contact } = await sentContact({ followup_requested: true });
+  const f = await addMessage(pool, contact.id, { kind: "followup" });
+  await syncFollowup(pool, contact.id, { enabled: false });
+  const m = fakeMailer();
+  await tick({ mailer: m });
+  assert.equal(m.calls.length, 0);
+  assert.equal((await msgRow(f.id)).state, "cancelled");
+});
+
+test("(g) follow-up is threaded on the initial's stored Message-ID, uses Re: subject and the rendered template; values are escaped", async () => {
+  const { contact } = await dueInitial(
+    { status: "sent", followup_requested: true, company: "<b>Acme</b> & Co", role: "{{company}}", person: "Priya Nair", subject: "Hello there" },
+    { state: "sent", sentAt: new Date(Date.now() - 8 * D), messageId: "<initial-123@mail.example>", scheduledFor: new Date(Date.now() - 8 * D) },
+  );
+  await addMessage(pool, contact.id, { kind: "followup" });
+  const m = fakeMailer();
+  await tick({ mailer: m });
+  assert.equal(m.calls.length, 1);
+  const o = m.calls[0];
+  assert.equal(o.subject, "Re: Hello there");
+  assert.equal(o.inReplyTo, "<initial-123@mail.example>");
+  assert.equal(o.references, "<initial-123@mail.example>");
+  assert.notEqual(o.messageId, "<initial-123@mail.example>");
+  assert.match(o.text, /^Hi Priya,/);
+  assert.match(o.text, /the \{\{company\}\} role at <b>Acme<\/b> & Co\./);
+  assert.match(o.html, /&lt;b&gt;Acme&lt;\/b&gt; &amp; Co/);
+  assert.doesNotMatch(o.html, /<b>Acme/);
+  const row = (await pool.query("select * from messages where contact_id=$1 and kind='followup'", [contact.id])).rows[0];
+  assert.equal(row.state, "sent");
+  assert.equal(row.message_id, o.messageId);
+});
+
+test("(g) contact Follow-up Text replaces the template body; edited template is used", async () => {
+  const a = await sentContact({ followup_requested: true, followup_text: "Custom nudge for **you**." });
+  await addMessage(pool, a.contact.id, { kind: "followup" });
+  await tick({ mailer: (a.m = fakeMailer()) });
+  assert.equal(a.m.calls[0].text, "Custom nudge for you.");
+
+  await putTemplate(pool, { subject: "Re: {{subject}}", body: "Ping {{firstName}} at {{company}}" });
+  const b = await sentContact({ followup_requested: true });
+  await addMessage(pool, b.contact.id, { kind: "followup" });
+  await tick({ mailer: (b.m = fakeMailer()) });
+  assert.equal(b.m.calls[0].text, "Ping Jo at Acme");
+});
+
+test("a follow-up whose initial Message-ID is unknown is cancelled, not sent unthreaded", async () => {
+  const { contact } = await dueInitial({ status: "sent", followup_requested: true });
+  const f = await addMessage(pool, contact.id, { kind: "followup" });
+  const m = fakeMailer();
+  await tick({ mailer: m });
+  assert.equal(m.calls.length, 0);
+  assert.equal((await msgRow(f.id)).state, "cancelled");
+});
+
+test("a failed follow-up leaves the contact 'sent' and is recorded", async () => {
+  const { contact } = await dueInitial({ status: "sent", followup_requested: true }, { state: "sent", sentAt: new Date(Date.now() - 8 * D), messageId: "<z@x>", scheduledFor: new Date(Date.now() - 8 * D) });
+  const f = await addMessage(pool, contact.id, { kind: "followup" });
+  const m = fakeMailer({ fail: Object.assign(new Error("no such user"), { code: "EENVELOPE", command: "RCPT TO", responseCode: 550 }) });
+  await tick({ mailer: m });
+  assert.equal((await msgRow(f.id)).state, "failed");
+  assert.equal((await contactRow(contact.id)).status, "sent");
+});
+
+test("recording-failure fallback never flips a row that was resolved meanwhile (stale worker, reused Message-ID)", async () => {
+  const { msg } = await dueInitial();
+  // The send succeeds but recording it fails; before the best-effort fallback runs, the operator
+  // has already settled the same row (here: cancelled, same stored Message-ID).
+  const wrapped = {
+    connect: async () => {
+      const client = await pool.connect();
+      const orig = client.query;
+      const q = orig.bind(client);
+      const release = client.release.bind(client);
+      client.release = (err) => {
+        client.query = orig; // never hand a sabotaged client back to the shared pool
+        client.release = release;
+        return release(err);
+      };
+      client.query = (text, ...rest) => {
+        if (typeof text === "string" && text.includes("INSERT INTO events")) return Promise.reject(new Error("boom"));
+        return q(text, ...rest);
+      };
+      return client;
+    },
+    query: async (text, params) => {
+      if (typeof text === "string" && text.startsWith("UPDATE messages SET state = 'sent'")) {
+        await pool.query("UPDATE messages SET state = 'cancelled' WHERE id = $1", [msg.id]);
+      }
+      return pool.query(text, params);
+    },
+  };
+  await runTick({ pool: wrapped, mailer: fakeMailer(), config: baseConfig, now: () => new Date(), sleep: noSleep, logger: silent });
+  assert.equal((await msgRow(msg.id)).state, "cancelled");
+});
+
+test("F1: a rejected app password (real EAUTH from a scripted SMTP server) holds sending: no attempt consumed, contact never failed, banner state set, cleared by the next good send", async () => {
+  const smtp = await startFakeSmtp("reject-auth");
+  try {
+    const a = await dueInitial();
+    const b = await dueInitial();
+    const bad = smtp.transport({ auth: { user: "u", pass: "wrong" } });
+    let clock = Date.now();
+    const now = () => new Date(clock);
+    let first;
+    for (let i = 0; i < 6; i++) {
+      const s = await tick({ mailer: bad, now });
+      if (i === 0) first = s;
+      clock += 20 * 60_000;
+    }
+    assert.equal(first.held, 1);
+    assert.equal(first.claimed, 1, "a systemic error stops the tick instead of trying every due message");
+    assert.equal(first.retried + first.failed + first.sent, 0);
+    for (const x of [a, b]) {
+      const row = await msgRow(x.msg.id);
+      assert.equal(row.state, "scheduled", "still waiting, never failed");
+      assert.equal(row.attempts, 0, "holds do not consume the 3-attempt budget");
+      assert.equal((await contactRow(x.contact.id)).status, "scheduled");
+    }
+    assert.match((await msgRow(a.msg.id)).error, /EAUTH/);
+    const hold = (await pool.query("select value from settings where key='send_hold'")).rows[0].value;
+    assert.equal(hold.code, "EAUTH");
+    assert.ok(hold.at);
+    assert.ok((await pool.query("select 1 from events where type='send_held'")).rowCount >= 1);
+    assert.equal((await pool.query("select count(*)::int n from messages where state='sent'")).rows[0].n, 0);
+
+    // First hold pushed the message ~15 minutes out.
+    const t0 = Date.now();
+    await pool.query("delete from settings where key='send_hold'"); // (R2 would otherwise pause this tick: the loop above just held)
+    await pool.query("update messages set state='scheduled', scheduled_for=$2 where id=$1", [a.msg.id, new Date(t0 - 1000)]);
+    await tick({ mailer: bad, now: () => new Date(t0) });
+    const gap = (await msgRow(a.msg.id)).scheduled_for.getTime() - t0;
+    assert.ok(gap >= 14 * 60_000 && gap <= 16 * 60_000, `hold is ~15 min, got ${gap}`);
+
+    // Credentials fixed: the next due message sends and the hold clears.
+    await pool.query("update messages set scheduled_for = now() - interval '1 minute' where state='scheduled'");
+    const good = smtp.transport();
+    smtp.setMode("ok");
+    const s2 = await tick({ mailer: good, now: () => new Date(t0 + 16 * 60_000) }); // R2: past the 15-minute hold window
+    assert.ok(s2.sent >= 1);
+    assert.equal((await pool.query("select count(*)::int n from settings where key='send_hold'")).rows[0].n, 0);
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("F1: a hold cannot be mistaken for a send and does not use up the daily cap", async () => {
+  const smtp = await startFakeSmtp("reject-auth");
+  try {
+    await dueInitial();
+    const s = await tick({ mailer: smtp.transport({ auth: { user: "u", pass: "x" } }), config: { dailySendCap: 1 } });
+    assert.equal(s.held, 1);
+    assert.equal(s.sent, 0);
+    smtp.setMode("ok");
+    await pool.query("update messages set scheduled_for = now() - interval '1 minute'");
+    const s2 = await tick({ mailer: smtp.transport(), config: { dailySendCap: 1 }, now: () => new Date(Date.now() + 16 * 60_000) }); // past the hold window
+    assert.equal(s2.sent, 1, "cap of 1 still available after a hold");
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("F2: in real mode a follow-up whose initial was a DRY RUN is skipped with a clear reason, never sent; dry-run mode does not filter", async () => {
+  const { contact } = await sentContact({ followup_requested: true }, { dryRun: true });
+  const f = await addMessage(pool, contact.id, { kind: "followup" });
+  const m = fakeMailer();
+  await tick({ mailer: m });
+  assert.equal(m.calls.length, 0);
+  const row = await msgRow(f.id);
+  assert.equal(row.state, "cancelled");
+  assert.match(row.error, /dry run/i);
+  const ev = (await pool.query("select meta from events where contact_id=$1 and type='send_skipped'", [contact.id])).rows[0];
+  assert.match(ev.meta.reason, /dry run/i);
+
+  const other = await sentContact({ followup_requested: true }, { dryRun: true });
+  await addMessage(pool, other.contact.id, { kind: "followup" });
+  const m2 = fakeMailer();
+  await tick({ mailer: m2, config: { dryRun: true } });
+  assert.equal(m2.calls.length, 1, "dry-run mode follows up dry-run initials");
+});
+
+test("a tick with nothing due is a no-op summary", async () => {
+  const s = await tick();
+  assert.deepEqual(s, { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, held: 0, retried: 0, failed: 0, needsReview: 0 });
+});
+
+async function threeDue() {
+  const emails = Array.from({ length: 3 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  const msgs = [];
+  for (const [i, c] of contacts.entries()) msgs.push(await addMessage(pool, c.id, { scheduledFor: new Date(Date.now() - (10 - i) * 60_000) }));
+  return msgs;
+}
+const states = async () => (await pool.query("select state, attempts, message_id, claimed_at from messages order by scheduled_for")).rows;
+
+test("shutdown: stop requested after the first send leaves the other claimed-able rows `scheduled`, never `sending`", async () => {
+  await threeDue();
+  let stop = false;
+  const m = fakeMailer({ onSend: async () => { stop = true; } });
+  const s = await tick({ mailer: m, extra: { shouldStop: () => stop } });
+  assert.equal(m.calls.length, 1);
+  assert.equal(s.sent, 1);
+  const rows = await states();
+  assert.deepEqual(rows.map((r) => r.state), ["sent", "scheduled", "scheduled"]);
+  assert.deepEqual(rows.slice(1).map((r) => [r.attempts, r.message_id, r.claimed_at]), [[0, null, null], [0, null, null]]);
+});
+
+test("shutdown during the jitter sleep releases the row it had already claimed", async () => {
+  await threeDue();
+  let stop = false;
+  const s = await tick({ extra: { shouldStop: () => stop }, sleep: async () => { stop = true; } });
+  assert.equal(s.sent, 1);
+  assert.deepEqual((await states()).map((r) => r.state), ["sent", "scheduled", "scheduled"]);
+});
+
+test("an error thrown mid-loop leaves no unprocessed row in `sending`", async () => {
+  await threeDue();
+  let n2 = 0;
+  await assert.rejects(tick({ extra: { onClaimed: async () => { if (++n2 === 2) throw new Error("boom"); } } }), /boom/);
+  const rows = await states();
+  assert.deepEqual(rows.map((r) => r.state), ["sent", "scheduled", "scheduled"]);
+  assert.equal(rows[1].attempts, 0);
+  assert.equal(rows[1].message_id, null);
+});
+
+test("only one message is ever in flight: a claimed batch is not pre-claimed", async () => {
+  await threeDue();
+  const seen = [];
+  const m = fakeMailer({ onSend: async () => { seen.push((await states()).filter((r) => r.state === "sending").length); } });
+  await tick({ mailer: m });
+  assert.deepEqual(seen, [1, 1, 1]);
+});
+
+// ---- integration: real nodemailer against a scripted local SMTP server -----------------------
+test("REAL SMTP (d1): server accepts DATA then drops the socket -> needs_review, exactly one DATA connection, never resent", async () => {
+  const smtp = await startFakeSmtp("die-after-data");
+  try {
+    const { msg } = await dueInitial();
+    const mailer = smtp.transport();
+    let clock = Date.now();
+    const now = () => new Date(clock);
+    const s = await tick({ mailer, now });
+    assert.equal(s.needsReview, 1);
+    assert.equal((await msgRow(msg.id)).state, "needs_review");
+    for (let i = 0; i < 3; i++) {
+      clock += 3 * 3600_000;
+      await tick({ mailer, now });
+    }
+    assert.equal(smtp.state.dataConnections, 1);
+    assert.equal((await msgRow(msg.id)).state, "needs_review");
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("REAL SMTP (d2): server replies 250 then closes abruptly -> delivered once, recorded sent, no further sends", async () => {
+  const smtp = await startFakeSmtp("reply-then-die");
+  try {
+    const { msg } = await dueInitial();
+    const mailer = smtp.transport();
+    await tick({ mailer });
+    await tick({ mailer, now: () => new Date(Date.now() + 3 * 3600_000) });
+    assert.equal(smtp.state.dataConnections, 1);
+    // nodemailer saw the 250 before the close, so a sent row is the truthful outcome
+    assert.equal((await msgRow(msg.id)).state, "sent");
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("REAL SMTP (d3): RCPT TO 550 -> failed immediately, contact failed, DATA never reached", async () => {
+  const smtp = await startFakeSmtp("reject-rcpt");
+  try {
+    const { contact, msg } = await dueInitial();
+    const mailer = smtp.transport();
+    const s = await tick({ mailer });
+    assert.equal(s.failed, 1);
+    const row = await msgRow(msg.id);
+    assert.equal(row.state, "failed");
+    assert.equal(row.attempts, 1);
+    assert.equal((await contactRow(contact.id)).status, "failed");
+    assert.equal(smtp.state.dataConnections, 0);
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("REAL SMTP (d4): connection refused -> back to scheduled with backoff and attempts+1", async () => {
+  const port = await closedPort();
+  const { msg } = await dueInitial();
+  const { default: nodemailer } = await import("nodemailer");
+  const refused = nodemailer.createTransport({ host: "127.0.0.1", port, secure: false, ignoreTLS: true });
+  const t0 = Date.now();
+  const s = await tick({ mailer: refused });
+  assert.equal(s.retried, 1);
+  const row = await msgRow(msg.id);
+  assert.equal(row.state, "scheduled");
+  assert.equal(row.attempts, 1);
+  assert.ok(row.scheduled_for.getTime() > t0 + 60_000);
+});
+
+test("follow-ups are held while the reply sweep is stale; initials are unaffected", async () => {
+  await pool.query("delete from settings where key='sweep_state'");
+  const fu = await sentContact({ followup_requested: true });
+  const f = await addMessage(pool, fu.contact.id, { kind: "followup" });
+  const ini = await dueInitial();
+  const m = fakeMailer();
+  const cfg = { replySweepEnabled: true };
+  await tick({ mailer: m, config: cfg });
+  assert.equal((await msgRow(ini.msg.id)).state, "sent");
+  assert.equal((await msgRow(f.id)).state, "scheduled", "follow-up held");
+  await pool.query("insert into settings(key,value) values('sweep_state',$1)", [JSON.stringify({ ok: true, lastSuccessAt: new Date().toISOString() })]);
+  await tick({ mailer: m, config: cfg });
+  assert.equal((await msgRow(f.id)).state, "sent", "released after a fresh successful sweep");
+  await pool.query("delete from settings where key='sweep_state'");
+});

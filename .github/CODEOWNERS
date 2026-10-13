@@ -1,0 +1,6 @@
+# Every change needs review from the owner; infra, pipelines and ownership rules are called out explicitly.
+*                @Harshavardhan-28
+/infra/          @Harshavardhan-28
+/.github/        @Harshavardhan-28
+/Dockerfile      @Harshavardhan-28
+/web/Dockerfile  @Harshavardhan-28

@@ -1,0 +1,196 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+  Outbox design tokens.
+  Language: Linear / Resend. Inter, a 4px grid, 8px radii (6px on small controls), near-black and
+  near-white neutrals, hairline borders, and one restrained indigo accent. Status colours exist
+  only on badges and meters. Light and dark are both token sets; `.dark` on <html> selects dark
+  (set before first paint by the nonce'd script in app/layout.tsx).
+*/
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.5rem;
+
+  --background: #fbfbfc;
+  --foreground: #16171a;
+  --card: #ffffff;
+  --card-foreground: #16171a;
+  --popover: #ffffff;
+  --popover-foreground: #16171a;
+  --primary: #5e6ad2;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f1f4;
+  --secondary-foreground: #26272c;
+  --muted: #f3f3f6;
+  --muted-foreground: #5d616d;
+  --accent: #efeff3;
+  --accent-foreground: #16171a;
+  --accent-text: #4a55b8;
+  --destructive: #c4283c;
+  --border: #e6e7ec;
+  --input: #d9dbe2;
+  --ring: #5e6ad2;
+
+  --sidebar: #f6f6f8;
+  --sidebar-foreground: #3a3d46;
+  --sidebar-border: #e6e7ec;
+
+  --st-green: #146c43;
+  --st-green-bg: #e5f4ec;
+  --st-indigo: #3f4bb8;
+  --st-indigo-bg: #eceefb;
+  --st-violet: #6a3dbd;
+  --st-violet-bg: #f1eafb;
+  --st-red: #b0213a;
+  --st-red-bg: #fdebed;
+  --st-amber: #835400;
+  --st-amber-bg: #fcf1d6;
+  --st-neutral: #4a4e5a;
+  --st-neutral-bg: #eeeff3;
+
+  --shadow-pop: 0 0 0 1px rgb(20 21 26 / 0.06), 0 8px 24px -6px rgb(20 21 26 / 0.14), 0 2px 6px -2px rgb(20 21 26 / 0.08);
+  color-scheme: light;
+}
+
+.dark {
+  --background: #0b0b0d;
+  --foreground: #ececef;
+  --card: #111214;
+  --card-foreground: #ececef;
+  --popover: #16171a;
+  --popover-foreground: #ececef;
+  --primary: #5e6ad2;
+  --primary-foreground: #ffffff;
+  --secondary: #1b1c20;
+  --secondary-foreground: #e4e5e9;
+  --muted: #17181b;
+  --muted-foreground: #a0a3ae;
+  --accent: #1d1e22;
+  --accent-foreground: #ececef;
+  --accent-text: #a9b0f5;
+  --destructive: #f0707f;
+  --border: #25262b;
+  --input: #32343a;
+  --ring: #7b86e6;
+
+  --sidebar: #0f1012;
+  --sidebar-foreground: #c9cbd2;
+  --sidebar-border: #202125;
+
+  --st-green: #5fd699;
+  --st-green-bg: #112519;
+  --st-indigo: #a9b0f5;
+  --st-indigo-bg: #1a1e3d;
+  --st-violet: #c6adf6;
+  --st-violet-bg: #261e3d;
+  --st-red: #ff8f9a;
+  --st-red-bg: #331519;
+  --st-amber: #f2bd62;
+  --st-amber-bg: #2d2210;
+  --st-neutral: #b6b8c2;
+  --st-neutral-bg: #1f2024;
+
+  --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.07), 0 12px 32px -8px rgb(0 0 0 / 0.7), 0 2px 8px -2px rgb(0 0 0 / 0.5);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-text: var(--accent-text);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+
+  --color-st-green: var(--st-green);
+  --color-st-green-bg: var(--st-green-bg);
+  --color-st-indigo: var(--st-indigo);
+  --color-st-indigo-bg: var(--st-indigo-bg);
+  --color-st-violet: var(--st-violet);
+  --color-st-violet-bg: var(--st-violet-bg);
+  --color-st-red: var(--st-red);
+  --color-st-red-bg: var(--st-red-bg);
+  --color-st-amber: var(--st-amber);
+  --color-st-amber-bg: var(--st-amber-bg);
+  --color-st-neutral: var(--st-neutral);
+  --color-st-neutral-bg: var(--st-neutral-bg);
+
+  --shadow-pop: var(--shadow-pop);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans text-[13px] leading-5 antialiased;
+    font-feature-settings: "cv11", "ss01", "tnum";
+    font-variant-numeric: tabular-nums;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-semibold tracking-tight;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  [data-slot="input"]:focus-visible,
+  [data-slot="select-trigger"]:focus-visible,
+  [data-slot="textarea"]:focus-visible {
+    outline: none;
+  }
+  input[type="datetime-local"],
+  input[type="number"] {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Date inputs: dark-mode friendly picker icon. */
+  .dark ::-webkit-calendar-picker-indicator {
+    filter: invert(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
