@@ -7,3 +7,10 @@ Dockerfile
 .dockerignore
 next-env.d.ts
 *.tsbuildinfo
+.git
+.superpowers
+.impeccable
+docs
+infra
+attachments
+signature.html

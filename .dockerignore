@@ -11,6 +11,10 @@ signature.html
 .impeccable
 .claude
 docs
+infra
+.github
+data
+test-contacts.csv
 test
 web
 node_modules
