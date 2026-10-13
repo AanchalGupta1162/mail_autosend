@@ -9,7 +9,7 @@
   --surface-2: #eef1f5;
   --ink: #172230;
   --ink-2: #455366;
-  --ink-3: #66748a;
+  --ink-3: #5d6a7f; /* >= 4.8:1 on paper, surface and surface-2 */
   --line: #dde2ea;
   --line-strong: #c3cad6;
   --blue: #1f4fbf;
@@ -331,7 +331,7 @@ input:disabled:not([type="checkbox"]) {
 .nav-link[aria-current="page"] {
   background: var(--surface-2);
   color: var(--ink);
-  box-shadow: inset 3px 0 0 var(--blue);
+  font-weight: 650;
 }
 .sidebar-foot {
   margin-top: auto;
@@ -354,6 +354,10 @@ input:disabled:not([type="checkbox"]) {
 }
 .mode-live {
   color: var(--red);
+}
+.mode-unknown {
+  color: var(--amber);
+  border-style: dashed;
 }
 .main {
   padding: 28px var(--gutter) 0;
@@ -471,28 +475,51 @@ input:disabled:not([type="checkbox"]) {
 
 /* ---------- Callouts ---------- */
 .callout {
-  border: 1px solid var(--line);
-  border-left-width: 3px;
+  --c: var(--ink-3);
+  --glyph: "i";
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--c) 32%, var(--line));
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
-  background: var(--surface);
+  padding: 10px 14px 10px 40px;
+  background: color-mix(in srgb, var(--c) 6%, var(--surface));
   display: grid;
   gap: 6px;
+}
+/* Severity is carried by the glyph and its shape as well as the colour. */
+.callout::before {
+  content: var(--glyph);
+  content: var(--glyph) / "";
+  position: absolute;
+  left: 13px;
+  top: 11px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--c);
+  color: var(--surface);
+  font: 700 12px/18px var(--font-mono);
+  text-align: center;
 }
 .callout-title {
   font-weight: 650;
 }
+.callout > .btn {
+  justify-self: start;
+}
 .callout-danger {
-  border-left-color: var(--red);
-  background: color-mix(in srgb, var(--red) 6%, var(--surface));
+  --c: var(--red);
+  --glyph: "!";
 }
 .callout-warning {
-  border-left-color: var(--amber);
-  background: color-mix(in srgb, var(--amber) 8%, var(--surface));
+  --c: var(--amber);
+  --glyph: "!";
+}
+.callout-warning::before {
+  border-radius: 3px;
 }
 .callout-success {
-  border-left-color: var(--green);
-  background: color-mix(in srgb, var(--green) 7%, var(--surface));
+  --c: var(--green);
+  --glyph: "✓";
 }
 .issue-list,
 .refusals {
