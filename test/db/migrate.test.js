@@ -4,7 +4,7 @@ import { createTestDb, directConnectionString } from "../helpers/db.js";
 import { createPool } from "../../src/db/pool.js";
 import { migrate } from "../../src/db/migrate.js";
 
-const EXPECTED = ["batches", "contacts", "events", "messages", "schema_migrations", "session", "settings", "suppressions", "users"];
+const EXPECTED = ["batches", "contacts", "events", "messages", "resumes", "schema_migrations", "session", "settings", "suppressions", "users"];
 let db;
 let publicBefore;
 
@@ -34,7 +34,7 @@ test("migrate is idempotent", async () => {
   const again = await migrate(db.pool);
   assert.deepEqual(again.applied, []);
   const { rows } = await db.pool.query("select count(*)::int n from schema_migrations");
-  assert.equal(rows[0].n, 3);
+  assert.equal(rows[0].n, 4);
 });
 
 test("search_path is the test schema, nothing leaks into public", async () => {
@@ -115,4 +115,23 @@ test("migration 003 can be re-applied safely (IF NOT EXISTS)", async () => {
   const sql = await readFile(new URL("../../src/db/migrations/003_reply_check.sql", import.meta.url), "utf8");
   await db.pool.query(sql);
   await db.pool.query(sql);
+});
+
+test("resumes: at most one live default, display names unique among live rows, choice columns exist", async () => {
+  const { pool } = db;
+  const ins = (name, def = false, deleted = false) =>
+    pool.query(
+      `insert into resumes(display_name, file_name, storage_key, generation, size_bytes, sha256, is_default, deleted_at)
+       values($1,'r.pdf','k-'||gen_random_uuid(),'1',10,'ab',$2,$3) returning id`,
+      [name, def, deleted ? new Date() : null],
+    );
+  await ins("General", true);
+  await assert.rejects(ins("Other", true), /resumes_one_default_idx/);
+  await assert.rejects(ins("general"), /resumes_live_name_idx/);
+  await ins("General", false, true); // a soft-deleted row does not hold the name
+  await ins("Deleted default", true, true); // nor the default slot
+  for (const [table, col] of [["batches", "resume_id"], ["contacts", "resume_id"], ["messages", "resume_id"], ["messages", "resume_generation"]]) {
+    const { rows } = await pool.query("select 1 from information_schema.columns where table_schema = current_schema() and table_name = $1 and column_name = $2", [table, col]);
+    assert.equal(rows.length, 1, `${table}.${col}`);
+  }
 });

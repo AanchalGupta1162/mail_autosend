@@ -57,16 +57,30 @@ const schema = z
     FROM_NAME: z.string().optional(),
     RESUME_PATH: z.string().optional(),
     SIGNATURE_PATH: z.string().optional(),
+    RESUME_STORAGE: z.enum(["local", "gcs"], { error: "RESUME_STORAGE must be local or gcs" }).optional().default("local"),
+    RESUME_BUCKET: z.string().trim().optional(),
+    RESUME_LOCAL_DIR: z.string().optional(),
   })
   .refine((e) => e.SEND_GAP_SECONDS_MIN <= e.SEND_GAP_SECONDS_MAX, {
     message: "SEND_GAP_SECONDS_MIN must be <= SEND_GAP_SECONDS_MAX",
     path: ["SEND_GAP_SECONDS_MAX"],
   })
   .superRefine((e, ctx) => {
+    if (e.RESUME_STORAGE !== "gcs") return;
+    // GCS bucket naming: 3-63 chars of lower-case letters, digits, dashes, underscores, dots.
+    if (!e.RESUME_BUCKET) ctx.addIssue({ code: "custom", path: ["RESUME_BUCKET"], message: "RESUME_BUCKET is required when RESUME_STORAGE=gcs" });
+    else if (!/^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$/.test(e.RESUME_BUCKET)) {
+      ctx.addIssue({ code: "custom", path: ["RESUME_BUCKET"], message: "RESUME_BUCKET is not a valid bucket name" });
+    }
+  })
+  .superRefine((e, ctx) => {
     if (e.DRY_RUN) return;
-    // Fail fast: a real run must never go out without the signature and the resume.
-    for (const key of ["SIGNATURE_PATH", "RESUME_PATH"]) {
+    // Fail fast: a real run must never go out without the signature. RESUME_PATH is only the legacy
+    // fallback for messages with no library resume: optional, but if set it must exist.
+    const required = [["SIGNATURE_PATH", true], ["RESUME_PATH", false]];
+    for (const [key, mandatory] of required) {
       const p = e[key]?.trim();
+      if (!p && !mandatory) continue;
       const isFile = p && existsSync(p) && statSync(p).isFile();
       if (!isFile) ctx.addIssue({ code: "custom", path: [key], message: `${key} must point to an existing file when DRY_RUN=false` });
     }
@@ -104,6 +118,9 @@ export function loadServerConfig(env = process.env) {
     fromName: e.FROM_NAME?.trim() || undefined,
     resumePath: e.RESUME_PATH?.trim() || undefined,
     signaturePath: e.SIGNATURE_PATH?.trim() || undefined,
+    resumeStorage: e.RESUME_STORAGE,
+    resumeBucket: e.RESUME_BUCKET || undefined,
+    resumeLocalDir: e.RESUME_LOCAL_DIR?.trim() || "./data/resumes",
   };
 }
 

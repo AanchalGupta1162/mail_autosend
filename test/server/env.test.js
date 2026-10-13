@@ -135,7 +135,8 @@ test("real mode fails fast when SIGNATURE_PATH or RESUME_PATH is missing, unset 
   const real = { ...base, GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw", DRY_RUN: "false" };
   assert.doesNotThrow(() => loadServerConfig({ ...real, ...files }));
   assert.throws(() => loadServerConfig({ ...real, ...files, SIGNATURE_PATH: "" }), /SIGNATURE_PATH/);
-  assert.throws(() => loadServerConfig({ ...real, ...files, RESUME_PATH: undefined }), /RESUME_PATH/);
+  // RESUME_PATH is only the legacy fallback now (the resume library is primary): optional, but if set it must exist.
+  assert.doesNotThrow(() => loadServerConfig({ ...real, ...files, RESUME_PATH: undefined }));
   assert.throws(() => loadServerConfig({ ...real, ...files, SIGNATURE_PATH: "/nonexistent/sig.html" }), (e) => /SIGNATURE_PATH/.test(e.message) && !e.message.includes("/nonexistent"));
   assert.throws(() => loadServerConfig({ ...real, ...files, RESUME_PATH: "/nonexistent/r.pdf" }), /RESUME_PATH/);
   assert.doesNotThrow(() => loadServerConfig({ ...base, SIGNATURE_PATH: "/nonexistent/sig.html" }));
@@ -150,4 +151,18 @@ test("TRUST_PROXY is a proxy hop count: 0/false/empty = off, 1..5 = that many ho
   for (const bad of ["true", "yes", "-1", "6", "1.5", "abc", "loopback", "10.0.0.0/8"]) {
     assert.throws(() => hops(bad), /TRUST_PROXY/, bad);
   }
+});
+
+test("resume storage: local by default, gcs needs a bucket, anything else is refused", () => {
+  const c = loadServerConfig(base);
+  assert.equal(c.resumeStorage, "local");
+  assert.equal(c.resumeLocalDir, "./data/resumes");
+  assert.equal(c.resumeBucket, undefined);
+  assert.equal(loadServerConfig({ ...base, RESUME_LOCAL_DIR: " /tmp/r " }).resumeLocalDir, "/tmp/r");
+  assert.throws(() => loadServerConfig({ ...base, RESUME_STORAGE: "gcs" }), /RESUME_BUCKET/);
+  assert.throws(() => loadServerConfig({ ...base, RESUME_STORAGE: "gcs", RESUME_BUCKET: "Bad_Bucket!" }), /RESUME_BUCKET/);
+  const g = loadServerConfig({ ...base, RESUME_STORAGE: "gcs", RESUME_BUCKET: "my-resumes-bucket" });
+  assert.equal(g.resumeStorage, "gcs");
+  assert.equal(g.resumeBucket, "my-resumes-bucket");
+  assert.throws(() => loadServerConfig({ ...base, RESUME_STORAGE: "s3" }), /RESUME_STORAGE/);
 });
