@@ -167,6 +167,20 @@ test("/internal/tick stops at its deadline and leaves the rest scheduled", async
   }
 });
 
+test("/internal/tick applies the send gap between rounds (MAX_PER_TICK=1, two messages)", async () => {
+  const t2 = await startTestApp({ ...ENV, MAX_PER_TICK: "1", SEND_GAP_SECONDS_MIN: "2", SEND_GAP_SECONDS_MAX: "2" }, { appOptions: { internalVerifier: verifier, mailer: { async sendMail(o) { stamps.push(Date.now()); return { messageId: o.messageId }; } } } });
+  const stamps = [];
+  try {
+    await dueInitials(2, t2.pool);
+    const r = await fetch(t2.url + "/internal/tick", { method: "POST", headers: { authorization: "Bearer good" } });
+    const j = await r.json();
+    assert.equal(j.summary.sent, 2);
+    assert.ok(stamps[1] - stamps[0] >= 1900, `gap skipped between rounds: ${stamps[1] - stamps[0]} ms`);
+  } finally {
+    await t2.close();
+  }
+});
+
 test("/internal/tick stops with reason window_closed when real sends are outside the enforced window", async () => {
   const real = {
     ...ENV,

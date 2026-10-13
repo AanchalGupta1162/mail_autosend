@@ -75,6 +75,14 @@ export function SendWindowForm() {
           ? "Real emails are only sent inside this window each day; anything due earlier waits for the next one."
           : "Not enforced on this server (development): emails send whenever they are due. Production enforces it."}
       </p>
+      {info.enforced && (
+        <Notice tone="warning" title="Changing the window needs an infrastructure change too">
+          <p>
+            Cloud Scheduler only wakes the worker 09:00-09:55 IST, and sends happen only if a tick fires inside the window. If you move the window, also
+            change the Terraform scheduler cron (<code className="font-mono text-xs">send_window_schedule</code> in infra/variables.tf), or nothing will send.
+          </p>
+        </Notice>
+      )}
       <div className="grid gap-4 sm:grid-cols-[8rem_8rem_minmax(0,1fr)]">
         {field("start", "Start", { placeholder: "09:00" })}
         {field("end", "End", { placeholder: "10:00" })}

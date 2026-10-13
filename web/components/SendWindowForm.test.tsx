@@ -20,6 +20,16 @@ describe("SendWindowForm", () => {
     expect(screen.getByText(/real emails are only sent inside this window/i)).toBeInTheDocument();
   });
 
+  it("warns that the Scheduler cron must match a changed window", async () => {
+    stubFetch(() => json({ enforced: true, window: W }));
+    render(<SendWindowForm />);
+    await screen.findByLabelText("Start");
+    const note = screen.getByText(/cloud scheduler/i);
+    expect(note).toHaveTextContent(/terraform/i);
+    expect(note).toHaveTextContent(/send_window_schedule/);
+    expect(note).toHaveTextContent(/tick fires inside the window/i);
+  });
+
   it("explains that the window is not enforced locally", async () => {
     stubFetch(() => json({ enforced: false, window: W }));
     render(<SendWindowForm />);

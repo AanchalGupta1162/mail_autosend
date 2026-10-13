@@ -49,7 +49,7 @@ export function internalRouter({ pool, config, mailer, checkReply, logger, verif
   let tickRunning = false;
 
   // Drains the queue: runTick until nothing is claimed, the send window closes, the deadline passes, the
-  // service is shutting down, or sending is paused by a hold. Pacing (random gaps) stays inside runTick.
+  // service is shutting down, or sending is paused by a hold. Pacing (random gaps) lives in runTick; the pacing state is shared across rounds so the gap holds between them.
   router.post("/tick", async (_req, res, next) => {
     if (tickRunning) return res.json({ ok: true, skipped: true, reason: "in_progress" });
     tickRunning = true;
@@ -62,11 +62,12 @@ export function internalRouter({ pool, config, mailer, checkReply, logger, verif
       const summary = emptySummary();
       let iterations = 0;
       let reason = "idle";
+      const pacing = {}; // shared across rounds: the send gap also applies between rounds
       while (true) {
         if (shuttingDown()) { reason = "shutdown"; break; }
         if (pastDeadline()) { reason = "deadline"; break; }
         if (iterations >= MAX_ITERATIONS) { reason = "iteration_cap"; break; }
-        const r = await runTick({ pool, mailer, config, logger, signal, shouldStop: () => shuttingDown() || pastDeadline() });
+        const r = await runTick({ pool, mailer, config, logger, signal, pacing, shouldStop: () => shuttingDown() || pastDeadline() });
         iterations += 1;
         for (const k of SUMMARY_KEYS) summary[k] += r[k] ?? 0;
         if (shuttingDown()) { reason = "shutdown"; break; }

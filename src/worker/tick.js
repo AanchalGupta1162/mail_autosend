@@ -323,6 +323,7 @@ export async function runTick({
   signal, // AbortSignal that wakes the jitter sleep on shutdown
   onClaimed, // test seam: called after a claim commits, before the message is processed
   resumeStorage, // resume object storage (default: built from config on first use)
+  pacing = {}, // gap state ({ attempted }) a caller may share across consecutive rounds so the gap also applies between the last send of one round and the first of the next
 }) {
   const clock = typeof now === "function" ? now : () => now;
   const summary = { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, held: 0, retried: 0, failed: 0, needsReview: 0 };
@@ -336,7 +337,6 @@ export async function runTick({
   }
   let storage;
   const ctx = { pool, mailer, config, sendTimeoutMs, resumeFetchTimeoutMs, logger, cache: createResumeCache(), storage: () => (storage ??= resumeStorage ?? createResumeStorage(config)) };
-  let attemptedBefore = false;
   // One message per iteration: only the row in flight is ever in `sending`; cap and the
   // per-tick limit are re-evaluated before every claim.
   // Real sends are claimed only inside the daily window when it is enforced (production). Dry-run and
@@ -358,7 +358,7 @@ export async function runTick({
     let entered = false;
     try {
       if (onClaimed) await onClaimed(row);
-      if (attemptedBefore) {
+      if (pacing.attempted) {
         const min = config.sendGapSecondsMin;
         const max = Math.max(min, config.sendGapSecondsMax);
         await sleep(Math.round((min + random() * (max - min)) * 1000), signal);
@@ -377,7 +377,7 @@ export async function runTick({
     if (result in summary) summary[result] += 1;
     else if (result === "heldResume") summary.held += 1;
     if (result === "held") break; // systemic (credentials/config): do not hammer SMTP with every due message
-    attemptedBefore = result === "sent" || result === "retried" || result === "failed" || result === "needsReview";
+    pacing.attempted = result === "sent" || result === "retried" || result === "failed" || result === "needsReview";
   }
   return summary;
 }

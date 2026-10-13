@@ -192,7 +192,7 @@ variable "reply_sweep_schedules" {
 }
 
 variable "send_window_schedule" {
-  description = "Cron for /internal/tick (Asia/Kolkata). The app additionally enforces the send window itself."
+  description = "Cron for /internal/tick (Asia/Kolkata). The app additionally enforces the send window itself, so if the Settings window changes this cron must change too or nothing sends."
   type        = string
   default     = "*/5 9 * * *"
 }

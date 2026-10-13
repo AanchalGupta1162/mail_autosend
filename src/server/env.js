@@ -82,7 +82,7 @@ const schema = z
     WORKER_MODE: z.enum(["polling", "scheduled"], { error: "WORKER_MODE must be polling or scheduled" }).optional().default("polling"),
     INTERNAL_AUDIENCE: z.string().trim().optional(),
     INTERNAL_INVOKER_SA: z.string().trim().optional(),
-    INTERNAL_TICK_DEADLINE_SECONDS: int(540, 1, 3600),
+    INTERNAL_TICK_DEADLINE_SECONDS: int(480, 1, 3600),
     SEND_WINDOW_ENFORCED: bool(false),
     SWEEP_MAX_AGE_MINUTES: int(90, 5, 1440),
     MIGRATE_ON_START: bool(true),

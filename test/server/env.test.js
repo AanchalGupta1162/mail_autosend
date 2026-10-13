@@ -174,7 +174,7 @@ test("scale-to-zero defaults keep local dev unchanged", () => {
   assert.equal(c.migrateOnStart, true);
   assert.equal(c.sendWindowEnforced, false);
   assert.equal(c.sweepMaxAgeMinutes, 90);
-  assert.equal(c.internalTickDeadlineSeconds, 540);
+  assert.equal(c.internalTickDeadlineSeconds, 480);
   assert.equal(c.signatureHtml, undefined);
   assert.equal(c.internalAudience, undefined);
   assert.equal(c.internalInvokerSa, undefined);
@@ -193,6 +193,10 @@ test("SWEEP_MAX_AGE_MINUTES is an integer 5..1440", () => {
   assert.equal(loadServerConfig({ ...base, SWEEP_MAX_AGE_MINUTES: "5" }).sweepMaxAgeMinutes, 5);
   assert.equal(loadServerConfig({ ...base, SWEEP_MAX_AGE_MINUTES: "1440" }).sweepMaxAgeMinutes, 1440);
   for (const v of ["4", "1441", "x", "1.5"]) assert.throws(() => loadServerConfig({ ...base, SWEEP_MAX_AGE_MINUTES: v }), /SWEEP_MAX_AGE_MINUTES/, v);
+});
+
+test("INTERNAL_TICK_DEADLINE_SECONDS defaults to 480 (480 + a 90 s in-flight send stays under the 600 s Scheduler attempt deadline)", () => {
+  assert.equal(loadServerConfig({ ...base }).internalTickDeadlineSeconds, 480);
 });
 
 test("INTERNAL_TICK_DEADLINE_SECONDS, SEND_WINDOW_ENFORCED and MIGRATE_ON_START parse", () => {

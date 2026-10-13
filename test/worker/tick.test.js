@@ -290,6 +290,33 @@ test("(f) MAX_PER_TICK limits a tick and the jitter gap goes through the injecte
   assert.equal(s2.sent, 2);
 });
 
+test("(f2) a shared pacing object carries the gap across rounds; without one each call starts fresh (polling)", async () => {
+  const emails = Array.from({ length: 4 }, em);
+  const { contacts } = await seedBatch(pool, emails, { overrides: Object.fromEntries(emails.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of contacts) await addMessage(pool, c.id);
+  const sleeps = [];
+  const sleep = async (ms) => void sleeps.push(ms);
+  const m = fakeMailer();
+  const pacing = {};
+  const opts = { mailer: m, config: { maxPerTick: 2 }, sleep, extra: { random: () => 0.5, pacing } };
+  const r1 = await tick(opts);
+  assert.equal(r1.sent, 2);
+  assert.equal(sleeps.length, 1, "round one: gap only between its two sends");
+  const r2 = await tick(opts);
+  assert.equal(r2.sent, 2);
+  assert.equal(sleeps.length, 3, "round two sleeps before its first send as well as between its sends");
+  assert.ok(sleeps.every((ms) => ms === 30_000));
+  // polling mode (no shared state): each call starts without a gap, as before
+  const more = Array.from({ length: 2 }, em);
+  const { contacts: c2 } = await seedBatch(pool, more, { overrides: Object.fromEntries(more.map((e) => [e, { status: "scheduled" }])) });
+  for (const c of c2) await addMessage(pool, c.id);
+  sleeps.length = 0;
+  const r3 = await tick({ mailer: m, config: { maxPerTick: 1 }, sleep, extra: { random: () => 0.5 } });
+  const r4 = await tick({ mailer: m, config: { maxPerTick: 1 }, sleep, extra: { random: () => 0.5 } });
+  assert.equal(r3.sent + r4.sent, 2);
+  assert.equal(sleeps.length, 0);
+});
+
 test("(f) DAILY_SEND_CAP is a rolling 24h count of real sends; dry-run sends have their own counter", async () => {
   const mk = async (state, sentAt, dryRun) => {
     const { contact } = await dueInitial({ status: "sent" }, { state, sentAt, dryRun, scheduledFor: new Date(Date.now() - 3 * D) });

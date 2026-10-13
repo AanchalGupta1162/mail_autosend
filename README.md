@@ -58,7 +58,7 @@ npm run e2e:local            # end-to-end walk-through, see below
 | `WORKER_MODE` | `polling` | `polling`: in-process send and sweep pollers (local dev). `scheduled`: no pollers; work is triggered through `/internal/*`. |
 | `INTERNAL_AUDIENCE` | unset | Expected OIDC audience (the backend URL). Required when `WORKER_MODE=scheduled`. |
 | `INTERNAL_INVOKER_SA` | unset | Only this service account email may call `/internal/*`. Required when `WORKER_MODE=scheduled`. |
-| `INTERNAL_TICK_DEADLINE_SECONDS` | `540` | Longest a single `/internal/tick` call keeps working (1-3600). |
+| `INTERNAL_TICK_DEADLINE_SECONDS` | `480` | Longest a single `/internal/tick` call keeps working (1-3600). Keep it plus a 90 s in-flight send under the 600 s Scheduler attempt deadline. |
 | `SEND_WINDOW_ENFORCED` | `false` | Gate real sends to the stored daily window (set `true` in production). |
 | `SWEEP_MAX_AGE_MINUTES` | `90` | Follow-ups are held when the last good reply sweep is older than this (5-1440). |
 | `SIGNATURE_HTML` | unset | Raw signature HTML (max 64 KB). Takes precedence over `SIGNATURE_PATH`; no file needed. |
@@ -78,7 +78,7 @@ npm run e2e:local            # end-to-end walk-through, see below
   - *Resume holds* (the message's library resume is missing, deleted from the bucket, unreadable, or there is no resume at all in real mode) affect only that message; other emails keep sending. The Dashboard shows "A message is on hold" until the message is sent, cancelled or rescheduled.
   The 3-attempt cap still applies to ordinary transient pre-send failures.
 - **Dry run.** A dry-run "send" marks the contact `sent` (and blocks rescheduling it) although nothing was delivered. In real mode a follow-up whose first email was a dry run is skipped (cancelled with an explanatory reason and a `send_skipped` event), never sent.
-- **Replies.** In real mode the reply sweep runs every 10 minutes (and on **Check replies now**). While reply checking is stale (no fully successful sweep in the last hour, real mode, sweep enabled) follow-ups are held; first emails are not. Automatic replies and bounces are not treated as replies. You can also mark a reply or an opt-out by hand.
+- **Replies.** In real mode the reply sweep runs every 10 minutes in polling mode, on the Cloud Scheduler sweep crons in scheduled mode (08:50 and later, see `docs/deploy.md`), and on **Check replies now**. While reply checking is stale (no fully successful sweep within `SWEEP_MAX_AGE_MINUTES`, default 90; real mode, sweep enabled) follow-ups are held; first emails are not. Automatic replies and bounces are not treated as replies. You can also mark a reply or an opt-out by hand.
 
 ### Rotating the admin password
 
@@ -106,7 +106,9 @@ PDFs are uploaded in **Settings > Resumes** (PDF only, up to 5 MB) and stored ou
   - On Cloud Run, grant the backend's service account `roles/storage.objectUser` on that bucket only (not project-wide). No key files.
   - Reads are pinned to the stored object generation. If the bucket has Object Versioning off, an overwritten or deleted object makes the message hold (safe, never sent without its resume); enable versioning or a retention policy if you want old generations to stay readable.
 
-## Deploy outline (not yet done; design only)
+## Deploy (Cloud Run)
+
+The full runbook is `docs/deploy.md` and the Terraform is described in `infra/README.md`. Status: the Terraform, the GitHub Actions workflows and the Dockerfiles are written and reviewed; the web image content was built successfully outside Docker, but no Docker image has been built here, no `terraform apply` has been run and nothing has been deployed to GCP, so none of it is proven end to end. Run a build and a `DRY_RUN=true` deploy first.
 
 Two images, no secrets baked into either:
 
@@ -114,7 +116,7 @@ Two images, no secrets baked into either:
 - `web/Dockerfile`: frontend, Next.js standalone server on port 3001, non-root. Build with the backend's URL, because it is baked into the `/api/*` rewrite when `next build` runs:
   `docker build -f web/Dockerfile --build-arg BACKEND_URL=https://<backend> web`
 
-Both Dockerfiles pin `node:22-bookworm-slim` by digest (multi-arch index). Refresh with `docker buildx imagetools inspect node:22-bookworm-slim`. `.dockerignore` (root and `web/`) keeps `.env*`, `attachments/`, `signature.html`, `.git`, `.superpowers/`, `.impeccable/`, `docs/`, `infra/`, `test/` and `node_modules` out of the build context. These images have been read through but **not built in this environment** (no running Docker daemon at the time), so run a build before relying on them.
+Both Dockerfiles pin `node:22-bookworm-slim` by digest (multi-arch index). Refresh with `docker buildx imagetools inspect node:22-bookworm-slim`. `.dockerignore` (root and `web/`) keeps `.env*`, `attachments/`, `signature.html`, `.git`, `.superpowers/`, `.impeccable/`, `docs/`, `infra/`, `test/` and `node_modules` out of the build context. No Docker daemon was available in this environment, so the images are unbuilt here (the CI workflow builds them); the web app was built and run as a standalone server outside Docker. Verify with a real build before relying on them.
 
 ### Scale-to-zero (Cloud Run + Cloud Scheduler)
 
@@ -123,7 +125,7 @@ Postgres is the queue, so the backend does not need to stay up. Run it with `WOR
 - `POST /internal/tick` loops the send worker until nothing is due, the send window closes, `INTERNAL_TICK_DEADLINE_SECONDS` passes, or the service shuts down. Response: `{ok, reason, iterations, summary}` where `reason` is `idle | window_closed | deadline | paused | shutdown | iteration_cap`. A call that overlaps a running tick returns `200 {ok, skipped: true, reason: "in_progress"}` (so Scheduler does not retry it).
 - `POST /internal/sweep` runs the reply sweep (same single-flight as `POST /api/sweep`) and returns `{ok, result}`; a sweep already running yields `200` with `result: {skipped: true, reason: "in_progress"}`.
 - Auth: a Google-signed ID token whose audience is `INTERNAL_AUDIENCE` (the backend URL) and whose `email` is `INTERNAL_INVOKER_SA` with `email_verified`. No/invalid token is `401`, a valid token from another account is `403`; the body never says why. These are the only routes (besides `/healthz`) mounted before the session/CSRF guards; a browser session does not authenticate them. `WORKER_MODE=scheduled` refuses to start without both settings.
-- Send window: real sends are claimed only inside the daily window when `SEND_WINDOW_ENFORCED=true` (production). The window lives in the settings table (default 09:00-10:00 `Asia/Kolkata`; start inclusive, end exclusive, same day) and is edited in Settings > Send window or via `GET/PUT /api/settings/send-window`. Dry-run and local dev (`SEND_WINDOW_ENFORCED` unset) are never gated. Messages due outside the window simply wait for the next one.
+- Send window: real sends are claimed only inside the daily window when `SEND_WINDOW_ENFORCED=true` (production). The window lives in the settings table (default 09:00-10:00 `Asia/Kolkata`; start inclusive, end exclusive, same day) and is edited in Settings > Send window or via `GET/PUT /api/settings/send-window`. Dry-run and local dev (`SEND_WINDOW_ENFORCED` unset) are never gated. Messages due outside the window simply wait for the next one. **The window setting does not move the Scheduler cron.** Sends only happen if a tick fires inside the window, and the Cloud Scheduler `send-window` cron is fixed in Terraform (`send_window_schedule` in `infra/variables.tf`, default `*/5 9 * * *` IST, with the sweep crons around it). If you change the window, also change that cron (and the sweep timing) in Terraform and apply it, or nothing will send.
 - Follow-ups are held while the last good reply sweep is older than `SWEEP_MAX_AGE_MINUTES` (default 90), so a Scheduler sweep must run within `SWEEP_MAX_AGE_MINUTES` of the send window. Otherwise follow-ups are held for the whole window (first emails still go). With the default 90 minutes and a 09:00 window, schedule a pre-window sweep at 08:50 (for example `50 8 * * *`) plus a sweep inside the window, so the last good sweep is never older than the limit when sending starts.
 - `/internal/tick` single-flight is per process, not shared across instances. Scheduled mode therefore **requires Cloud Run `max-instances=1`**; with more instances two ticks could overlap (the claim logic still prevents duplicate sends, but the cap and gap pacing would no longer hold).
 - Set `MIGRATE_ON_START=false` in production and run `node src/db/migrate.js` as a job before each rollout.
@@ -141,5 +143,5 @@ Suggested Google Cloud shape:
 
 - Single admin account; no user management.
 - Reply detection depends on Gmail IMAP and is verified by unit tests with injected checkers, not against a live mailbox.
-- The reply sweep and the send worker share one process; a hung IMAP call delays shutdown by up to two minutes.
+- In polling mode the reply sweep and the send worker share one process; a hung IMAP call delays shutdown by up to two minutes. In scheduled mode the sweep and tick are separate requests on the same instance.
 - `npm audit --omit=dev` reports no vulnerabilities in the backend or the frontend. A full `npm --prefix web audit` still lists `braces` (via eslint-config-next's lint tooling, development only, never shipped); the suggested fix is a downgrade to eslint-config-next 14, so it is left alone.

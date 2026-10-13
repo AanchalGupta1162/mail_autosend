@@ -4,6 +4,11 @@ Architecture in one paragraph: `mail-web` (public Next.js) proxies `/api/*` to `
 Cloud Scheduler wakes the backend with OIDC-authenticated calls: `send-window` (`*/5 9 * * *` IST) calls `/internal/tick`,
 five `reply-sweep-*` jobs call `/internal/sweep`. Postgres (Neon) is the queue, so a missed wake-up is a delay, never a lost
 or duplicate send. Sends are also gated inside the app to the 09:00-10:00 IST window (`SEND_WINDOW_ENFORCED=true`).
+
+> **Changing the send window is two changes.** The window in Settings only gates sends inside the app; it does not move the
+> Scheduler cron. Sends happen only if a tick fires inside the window, so a new window also needs a new Terraform
+> `send_window_schedule` (`infra/variables.tf`) and, to keep follow-ups flowing, sweep crons within `SWEEP_MAX_AGE_MINUTES`
+> before it. Otherwise nothing sends (ticks outside the window are refused).
 Infrastructure is Terraform (`infra/`), images and traffic are GitHub Actions (`.github/workflows/deploy.yml`).
 
 Placeholders: `R=asia-south1`. Run `gcloud config set project codecell-vesit` first.
