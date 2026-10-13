@@ -9,6 +9,8 @@ const BACKEND_URL = (process.env.BACKEND_URL ?? "http://localhost:3000").replace
 const nextConfig: NextConfig = {
   // web/ has its own lockfile; keep Turbopack from treating the repo root as the workspace.
   turbopack: { root: fileURLToPath(new URL(".", import.meta.url)) },
+  // Self-contained server bundle (.next/standalone) for the container image; `next dev`/`next start` are unaffected.
+  output: "standalone",
   poweredByHeader: false,
   reactStrictMode: true,
   productionBrowserSourceMaps: false,
