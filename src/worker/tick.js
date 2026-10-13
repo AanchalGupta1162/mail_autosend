@@ -100,7 +100,7 @@ function withTimeout(promise, ms) {
 // row for the whole SMTP call. markReplied/optOut/followup-toggle take FOR UPDATE on that row, so
 // they wait until the send finishes instead of racing it: re-check + send are effectively atomic
 // with respect to every user action on this contact.
-async function processMessage({ pool, mailer, config, signatureHtml, sendTimeoutMs, logger }, claimed, clock) {
+async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, claimed, clock) {
   const client = await pool.connect();
   let begun = false;
   let outcome = "lost";
@@ -145,10 +145,18 @@ async function processMessage({ pool, mailer, config, signatureHtml, sendTimeout
     }
 
     const template = message.kind === "followup" ? await getTemplate(client) : null;
-    const mail = buildMail({ config, signatureHtml, contact, message, initialMessageId, template });
-
     let failure = null;
+    let signatureHtml = "";
     try {
+      // Read at send time: a signature that vanished after startup must not produce an unsigned mail.
+      signatureHtml = loadSignature(config);
+    } catch (err) {
+      failure = err; // classified as a pre-send (retryable) failure; nothing is handed to SMTP
+    }
+    const mail = failure ? null : buildMail({ config, signatureHtml, contact, message, initialMessageId, template });
+
+    try {
+      if (failure) throw failure;
       await withTimeout(Promise.resolve(mailer.sendMail(mail)), sendTimeoutMs);
       sentOk = true;
     } catch (err) {
@@ -254,7 +262,7 @@ export async function runTick({
   const clock = typeof now === "function" ? now : () => now;
   const summary = { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, retried: 0, failed: 0, needsReview: 0 };
   summary.staleRecovered = await recoverStale(pool, clock());
-  const ctx = { pool, mailer, config, signatureHtml: loadSignature(config), sendTimeoutMs, logger };
+  const ctx = { pool, mailer, config, sendTimeoutMs, logger };
   let attemptedBefore = false;
   // One message per iteration: only the row in flight is ever in `sending`; cap and the
   // per-tick limit are re-evaluated before every claim.

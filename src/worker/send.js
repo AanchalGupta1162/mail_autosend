@@ -3,12 +3,15 @@ import { readFileSync } from "node:fs";
 import { buildFollowUpMailOptions, buildInitialMailOptions } from "../mailer.js";
 import { renderFollowup } from "../domain/template.js";
 
+// Dry-run is lenient (unsigned preview mail). In real mode a configured signature that cannot be
+// read must stop the send: throws an error classified as a retryable pre-send failure (ENOENT/EACCES).
 export function loadSignature(config) {
   if (!config?.signaturePath) return "";
   try {
     return readFileSync(config.signaturePath, "utf8");
-  } catch {
-    return "";
+  } catch (err) {
+    if (config.dryRun) return "";
+    throw Object.assign(new Error("signature file unreadable"), { code: err?.code === "EACCES" ? "EACCES" : "ENOENT" });
   }
 }
 

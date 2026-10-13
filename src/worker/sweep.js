@@ -17,6 +17,14 @@ export function sweepTolerance(candidates) {
   return Math.max(3, Math.floor(candidates * 0.05));
 }
 
+// Success = no fatal error AND (nothing to check OR at least one check really completed) AND
+// rowErrors within tolerance, where tolerance can never cover every candidate. A systematic
+// non-fatal failure (every search errors) therefore never reads as a healthy sweep.
+export function sweepOk({ candidates, checked, rowErrors }) {
+  if (candidates === 0) return rowErrors <= sweepTolerance(0);
+  return checked > 0 && rowErrors <= Math.min(sweepTolerance(candidates), candidates - 1);
+}
+
 // Connection/auth class errors poison the whole run; anything else is a per-row problem.
 export function isFatalSweepError(err) {
   return Boolean(err?.fatal || err?.authenticationFailed || FATAL_CODES.has(String(err?.code ?? "").toUpperCase()));
@@ -140,6 +148,6 @@ async function doSweep({ pool, config, checkReply, openChecker, logger = console
     await record({ ok: false, errorCode: String(fatal.code ?? fatal.name ?? "Error"), rowErrors: summary.rowErrors });
     return { ...summary, error: true };
   }
-  await record({ ok: summary.rowErrors <= sweepTolerance(candidates), errorCode: null, rowErrors: summary.rowErrors });
+  await record({ ok: sweepOk({ candidates, checked: summary.checked, rowErrors: summary.rowErrors }), errorCode: null, rowErrors: summary.rowErrors });
   return summary;
 }

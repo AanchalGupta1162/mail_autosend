@@ -4,7 +4,7 @@ import { createTestDb } from "../helpers/db.js";
 import { seedBatch, addMessage } from "../helpers/seed.js";
 import { runSweep } from "../../src/worker/sweep.js";
 import { buildReplySearches, classifyReply, parseHeaders, createCheckerFromClient } from "../../src/imap.js";
-import { followupSendsAllowed, SWEEP_WINDOW_DAYS, sweepTolerance, isFatalSweepError } from "../../src/worker/sweep.js";
+import { followupSendsAllowed, SWEEP_WINDOW_DAYS, sweepTolerance, sweepOk, isFatalSweepError } from "../../src/worker/sweep.js";
 import { stopWorkers } from "../../src/worker/poller.js";
 
 let db, pool;
@@ -401,4 +401,33 @@ test("stopWorkers stops the send poller first and does not wait for the sweep be
   releaseSend();
   await p;
   await stopWorkers(null, undefined); // tolerates missing pollers
+});
+
+// --- N1: systematic non-fatal failure must not look like success ------------------------------------
+test("sweepOk: no candidates is ok; zero successful checks is never ok; tolerance never covers every candidate", () => {
+  assert.equal(sweepOk({ candidates: 0, checked: 0, rowErrors: 0 }), true);
+  assert.equal(sweepOk({ candidates: 3, checked: 0, rowErrors: 3 }), false);
+  assert.equal(sweepOk({ candidates: 1, checked: 0, rowErrors: 1 }), false);
+  assert.equal(sweepOk({ candidates: 1, checked: 1, rowErrors: 0 }), true);
+  assert.equal(sweepOk({ candidates: 4, checked: 1, rowErrors: 3 }), true);
+  assert.equal(sweepOk({ candidates: 4, checked: 0, rowErrors: 4 }), false);
+  assert.equal(sweepOk({ candidates: 6, checked: 2, rowErrors: 4 }), false);
+});
+
+test("1-3 candidates all failing non-fatally => ok:false, lastSuccessAt unchanged, hold stays", async () => {
+  for (const n of [1, 2, 3]) {
+    await pool.query("TRUNCATE batches CASCADE");
+    await pool.query("delete from settings where key='sweep_state'");
+    await runSweep({ pool, config: { dryRun: false }, logger: quiet(), checkReply: async () => false });
+    const before = (await pool.query("select value from settings where key='sweep_state'")).rows[0].value;
+    assert.equal(before.ok, true, "empty sweep is ok");
+    for (let i = 0; i < n; i++) await sentContact();
+    await new Promise((r) => setTimeout(r, 15));
+    const out = await runSweep({ pool, config: { dryRun: false }, logger: quiet(), checkReply: async () => { throw Object.assign(new Error("x"), { code: "ESEARCH" }); } });
+    assert.equal(out.checked, 0);
+    assert.equal(out.rowErrors, n);
+    const st = (await pool.query("select value from settings where key='sweep_state'")).rows[0].value;
+    assert.equal(st.ok, false, `n=${n}`);
+    assert.equal(st.lastSuccessAt, before.lastSuccessAt, `n=${n}`);
+  }
 });

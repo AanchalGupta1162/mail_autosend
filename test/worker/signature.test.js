@@ -7,8 +7,8 @@ import { startFakeSmtp } from "../helpers/smtp.js";
 import { runTick } from "../../src/worker/tick.js";
 import { startTestApp } from "../helpers/app.js";
 
-const SIGNATURE = path.resolve("signature.html");
-const RESUME = path.resolve("attachments/Harshavardhan_Khamkar_Resume_.pdf");
+const SIGNATURE = path.resolve("test/fixtures/sig-fixture.html");
+const RESUME = path.resolve("test/fixtures/resume.pdf");
 const silent = { error() {}, warn() {}, info() {} };
 const config = {
   dryRun: false, dailySendCap: 100, maxPerTick: 5, sendGapSecondsMin: 0, sendGapSecondsMax: 0,
@@ -27,6 +27,7 @@ after(async () => {
 });
 beforeEach(async () => {
   smtp.state.bodies.length = 0;
+  smtp.state.dataConnections = 0;
   await pool.query("TRUNCATE batches, suppressions, events RESTART IDENTITY CASCADE");
 });
 
@@ -37,9 +38,9 @@ const tick = () => runTick({ pool, mailer: smtp.transport(), config, sleep: asyn
 function assertSignedWithResume(raw) {
   const body = decode(raw);
   assert.match(body, /Content-Type: text\/html/i);
-  assert.ok(body.includes("github.com/Harshavardhan-28"), "signature html is in the body");
-  assert.ok(body.includes("<strong>Harshavardhan Khamkar</strong>"), "signature name is in the body");
-  assert.match(body, /Content-Disposition: attachment;\s*filename=("?)Harshavardhan_Khamkar_Resume_\.pdf/i, "resume is attached");
+  assert.ok(body.includes("example.com/portfolio-fixture"), "signature html is in the body");
+  assert.ok(body.includes("<strong>Test Signer</strong>"), "signature name is in the body");
+  assert.match(body, /Content-Disposition: attachment;\s*filename=("?)resume\.pdf/i, "resume is attached");
   assert.match(body, /application\/pdf/i);
 }
 
@@ -74,9 +75,29 @@ test("the batch preview endpoint shows the signature", async () => {
     f.append("file", new Blob([csv], { type: "text/csv" }), "l.csv");
     const r = await c.raw("POST", "/api/batches", { rawBody: f });
     assert.equal(r.status, 201, r.text);
-    assert.match(r.json.contacts[0].preview.text, /Harshavardhan Khamkar/);
+    assert.match(r.json.contacts[0].preview.text, /Test Signer/);
     assert.match(r.json.contacts[0].preview.text, /Regards,/);
   } finally {
     await t.close();
   }
+});
+
+test("real mode: a signature file that vanished after startup fails the send before SMTP (retryable); dry-run stays lenient", async () => {
+  const email = "sig3@example.com";
+  const { contacts } = await seedBatch(pool, [email], { overrides: { [email]: { status: "scheduled" } } });
+  const msg = await addMessage(pool, contacts[0].id, {});
+  const gone = { ...config, signaturePath: path.resolve("test/fixtures/does-not-exist.html") };
+  const out = await runTick({ pool, mailer: smtp.transport(), config: gone, sleep: async () => {}, logger: silent });
+  assert.equal(out.sent, 0);
+  assert.equal(out.retried, 1);
+  assert.equal(smtp.state.dataConnections, 0, "nothing reached SMTP");
+  const row = (await pool.query("select state, error from messages where id=$1", [msg.id])).rows[0];
+  assert.equal(row.state, "scheduled");
+  assert.match(row.error, /ENOENT|signature/i);
+  assert.equal((await pool.query("select status from contacts where id=$1", [contacts[0].id])).rows[0].status, "scheduled");
+
+  // dry-run (jsonTransport) is lenient: sends unsigned
+  await pool.query("update messages set scheduled_for = now() - interval '1 minute' where id=$1", [msg.id]);
+  const dry = await runTick({ pool, mailer: { sendMail: async (o) => ({ messageId: o.messageId }) }, config: { ...gone, dryRun: true }, sleep: async () => {}, logger: silent });
+  assert.equal(dry.sent, 1);
 });

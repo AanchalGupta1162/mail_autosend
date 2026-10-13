@@ -76,7 +76,7 @@ test("dashboard aggregates seeded states", async () => {
 });
 
 test("sentToday counts only same-mode sends in the last 24h", async () => {
-  const real = await startTestApp({ DRY_RUN: "false", GMAIL_USER: "a@b.c", GMAIL_APP_PASSWORD: "x", SIGNATURE_PATH: path.resolve("signature.html"), RESUME_PATH: path.resolve("attachments/Harshavardhan_Khamkar_Resume_.pdf") });
+  const real = await startTestApp({ DRY_RUN: "false", GMAIL_USER: "a@b.c", GMAIL_APP_PASSWORD: "x", SIGNATURE_PATH: path.resolve("test/fixtures/sig-fixture.html"), RESUME_PATH: path.resolve("test/fixtures/resume.pdf") });
   try {
     await real.addUser("admin");
     const rc = real.client();

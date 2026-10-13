@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { loadServerConfig, loadAdminSeedConfig } from "../../src/server/env.js";
 
-import path from "node:path";
-const files = { SIGNATURE_PATH: path.resolve("signature.html"), RESUME_PATH: path.resolve("attachments/Harshavardhan_Khamkar_Resume_.pdf") };
+const files = { SIGNATURE_PATH: path.resolve("test/fixtures/sig-fixture.html"), RESUME_PATH: path.resolve("test/fixtures/resume.pdf") };
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/db",
   SESSION_SECRET: "x".repeat(32),
