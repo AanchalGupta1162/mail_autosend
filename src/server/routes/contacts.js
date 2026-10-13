@@ -40,7 +40,24 @@ export function contactsRouter({ pool }) {
         `SELECT * FROM contacts ${clause} ORDER BY created_at DESC, id LIMIT ${limit} OFFSET ${offset}`,
         params,
       );
-      res.json({ contacts: rows.map(serializeContact), total: total.rows[0].n, page, pageSize });
+      // Live (non-cancelled) messages per listed contact, so the UI can cancel/reschedule by id.
+      const msgs = await pool.query(
+        `SELECT id, contact_id, kind, state, scheduled_for, sent_at FROM messages
+          WHERE contact_id = ANY($1::uuid[]) AND state <> 'cancelled' ORDER BY scheduled_for, id`,
+        [rows.map((r) => r.id)],
+      );
+      const byContact = new Map();
+      for (const m of msgs.rows) {
+        const list = byContact.get(m.contact_id) ?? [];
+        list.push({ id: m.id, kind: m.kind, state: m.state, scheduledFor: m.scheduled_for, sentAt: m.sent_at });
+        byContact.set(m.contact_id, list);
+      }
+      res.json({
+        contacts: rows.map((r) => ({ ...serializeContact(r), messages: byContact.get(r.id) ?? [] })),
+        total: total.rows[0].n,
+        page,
+        pageSize,
+      });
     } catch (err) {
       next(err);
     }

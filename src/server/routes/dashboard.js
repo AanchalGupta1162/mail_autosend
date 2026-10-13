@@ -53,6 +53,7 @@ export async function loadDashboard(pool, config) {
     byCompany: companies.rows,
     sweep: sweepState.rows[0]?.value ?? null,
     followupsHeld: !allowed,
+    dryRun: Boolean(config.dryRun),
   };
 }
 

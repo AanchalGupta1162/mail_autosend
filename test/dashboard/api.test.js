@@ -146,3 +146,17 @@ test("dashboard exposes the last sweep result and whether follow-ups are held", 
   assert.equal(r.sweep.ok, false);
   assert.equal(r.sweep.errorCode, "EAUTH");
 });
+
+test("dashboard exposes the effective dry-run mode", async () => {
+  const r = (await c.get("/api/dashboard")).json;
+  assert.equal(r.dryRun, true, "default test config is dry-run");
+  const real = await startTestApp({ DRY_RUN: "false", GMAIL_USER: "a@b.c", GMAIL_APP_PASSWORD: "x", SIGNATURE_PATH: path.resolve("test/fixtures/sig-fixture.html"), RESUME_PATH: path.resolve("test/fixtures/resume.pdf") });
+  try {
+    await real.addUser("admin");
+    const rc = real.client();
+    await rc.login();
+    assert.equal((await rc.get("/api/dashboard")).json.dryRun, false);
+  } finally {
+    await real.close();
+  }
+});
