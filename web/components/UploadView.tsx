@@ -1,10 +1,10 @@
 "use client";
 
-import { useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 import { api, ApiError } from "@/lib/api";
 import { checkCsvFile, MAX_ROWS } from "@/lib/upload";
 import { plural } from "@/lib/format";
-import type { RowIssue, UploadResult } from "@/lib/types";
+import type { Resume, RowIssue, UploadResult } from "@/lib/types";
 import { BatchScheduler } from "./BatchScheduler";
 
 export function UploadView() {
@@ -16,6 +16,11 @@ export function UploadView() {
   const [rowErrors, setRowErrors] = useState<RowIssue[]>([]);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
+  const [resumes, setResumes] = useState<Resume[]>([]);
+
+  useEffect(() => {
+    api.listResumes().then(setResumes, () => {});
+  }, []);
 
   function pick(f: File | undefined | null) {
     setRowErrors([]);
@@ -73,7 +78,7 @@ export function UploadView() {
             Upload another file
           </button>
         </header>
-        <BatchScheduler upload={result} />
+        <BatchScheduler upload={result} resumes={resumes} />
       </div>
     );
   }

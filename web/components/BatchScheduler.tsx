@@ -6,14 +6,14 @@ import { api, ApiError } from "@/lib/api";
 import { checkSendTime, planSchedule, toLocalInputValue, MAX_DAYS_AHEAD, MAX_STAGGER_MINUTES } from "@/lib/schedule";
 import { buildPreviewRows, initialSelection, selectionState, setAll, toggle } from "@/lib/selection";
 import { formatDateTime, localTimeZone, plural } from "@/lib/format";
-import type { ContactStatus, Refusal, UploadResult } from "@/lib/types";
+import type { ContactStatus, Refusal, Resume, UploadResult } from "@/lib/types";
 import { FollowupToggle } from "./FollowupToggle";
 import { Postmark } from "./Postmark";
 import { RefusalList } from "./RefusalList";
 import { refusalText } from "@/lib/refusals";
 import { StatusBadge } from "./StatusBadge";
 
-type Props = { upload: UploadResult; now?: () => Date };
+type Props = { upload: UploadResult; resumes?: Resume[]; now?: () => Date };
 
 type Outcome = {
   scheduled: number;
@@ -28,7 +28,7 @@ function SelectAll({ state, onChange }: { state: "none" | "some" | "all"; onChan
   return <input ref={ref} type="checkbox" aria-label="Select all" checked={state === "all"} onChange={(e) => onChange(e.target.checked)} />;
 }
 
-export function BatchScheduler({ upload, now = () => new Date() }: Props) {
+export function BatchScheduler({ upload, resumes = [], now = () => new Date() }: Props) {
   const rows = useMemo(() => buildPreviewRows(upload.contacts, upload.warnings), [upload]);
   const [selected, setSelected] = useState<string[]>(() => initialSelection(rows));
   const [sendAt, setSendAt] = useState("");
@@ -42,6 +42,10 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
+  // Until the operator chooses, the library default (if any) applies.
+  const [pickedResume, setPickedResume] = useState<string | null>(null);
+  const resumeId = pickedResume ?? resumes.find((r) => r.isDefault)?.id ?? "";
+  const resumeName = resumes.find((r) => r.id === resumeId)?.displayName;
 
   const plan = planSchedule({ selectedIds: selected, sendAt, staggerMinutes: stagger, overrides, now: now() });
   const errs = plan.ok ? null : plan.errors;
@@ -83,7 +87,7 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
     const failed: Outcome["failed"] = [];
     try {
       if (plan.plan.bulk) {
-        const messages = await api.scheduleBatch(upload.batch.id, plan.plan.bulk);
+        const messages = await api.scheduleBatch(upload.batch.id, resumeId ? { ...plan.plan.bulk, resumeId } : plan.plan.bulk);
         for (const m of messages ?? []) done[m.contactId] = m.scheduledFor;
         if (!messages?.length) for (const id of plan.plan.bulk.contactIds) done[id] = plan.plan.times[id]!.toISOString();
       }
@@ -95,7 +99,7 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
     }
     for (const o of plan.plan.overrides) {
       try {
-        const m = await api.scheduleContact(o.contactId, o.sendAt);
+        const m = await api.scheduleContact(o.contactId, o.sendAt, resumeId || undefined);
         done[o.contactId] = m?.scheduledFor ?? o.sendAt;
       } catch (err) {
         const reason = err instanceof ApiError && err.refused?.[0] ? err.refused[0].reason : null;
@@ -196,6 +200,7 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
                     </td>
                     <td>
                       <div className="cell-subject">{c.preview.subject}</div>
+                      {(resumeName ?? c.attachment?.displayName) && <div className="cell-secondary attachment-line">Attachment: {resumeName ?? c.attachment?.displayName}</div>}
                       <button
                         type="button"
                         className="btn-link"
@@ -265,6 +270,12 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
                               <dt>Subject</dt>
                               <dd>{c.preview.subject}</dd>
                             </div>
+                            {(resumeName ?? c.attachment?.displayName) && (
+                              <div>
+                                <dt>Attachment</dt>
+                                <dd>{resumeName ?? c.attachment?.displayName}</dd>
+                              </div>
+                            )}
                           </dl>
                           {/* Plain text only: the API never sends HTML, and we never inject markup. */}
                           <pre className="letter-body">{c.preview.text}</pre>
@@ -334,6 +345,27 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
           <p className="hint" id="stagger-hint">
             {errs?.stagger ? <span className="field-error-inline">{errs.stagger}</span> : "Gap between emails, in table order"}
           </p>
+        </div>
+        <div className="field">
+          {resumes.length > 0 ? (
+            <>
+              <label htmlFor="resume-pick">Resume to attach</label>
+              <select id="resume-pick" className="resume-pick" value={resumeId} onChange={(e) => setPickedResume(e.target.value)}>
+                {!resumeId && <option value="">Choose a resume</option>}
+                {resumes.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.displayName}
+                    {r.isDefault ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="hint">Sent as a PDF attachment with every selected email.</p>
+            </>
+          ) : (
+            <p className="hint">
+              No resumes in the library. Add one in <Link href="/settings">Settings</Link>.
+            </p>
+          )}
         </div>
         <div className="schedule-summary">
           <p className="hint" aria-live="polite">

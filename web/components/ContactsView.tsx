@@ -5,7 +5,7 @@ import { api, ApiError } from "@/lib/api";
 import { checkSendTime, toLocalInputValue, MAX_DAYS_AHEAD } from "@/lib/schedule";
 import { formatDateTime, plural, statusLabel } from "@/lib/format";
 import { refusalText } from "@/lib/refusals";
-import { CONTACT_STATUSES, type BatchSummary, type ContactListItem, type ContactStatus, type ContactsPage, type ResolveAction } from "@/lib/types";
+import { CONTACT_STATUSES, type BatchSummary, type ContactListItem, type ContactStatus, type ContactsPage, type ResolveAction, type Resume } from "@/lib/types";
 import { useMode } from "./AppShell";
 import { FollowupToggle } from "./FollowupToggle";
 import { Postmark } from "./Postmark";
@@ -169,6 +169,40 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
   );
 }
 
+function ResumePick({ contact, resumes, onDone }: { contact: ContactListItem; resumes: Resume[]; onDone: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const def = resumes.find((r) => r.isDefault);
+  async function change(value: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setContactResume(contact.id, value || null);
+      onDone();
+    } catch (err) {
+      setError(describe(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="resume-pick-wrap">
+      <label className="sr-only" htmlFor={`rs-${contact.id}`}>
+        Resume for {contact.email}
+      </label>
+      <select id={`rs-${contact.id}`} className="resume-pick" value={contact.resumeId ?? ""} disabled={busy} onChange={(e) => change(e.target.value)}>
+        <option value="">{def ? `Default (${def.displayName})` : "Default"}</option>
+        {resumes.map((r) => (
+          <option key={r.id} value={r.id}>
+            {r.displayName}
+          </option>
+        ))}
+      </select>
+      {error && <p className="field-error">{error}</p>}
+    </div>
+  );
+}
+
 function NextSend({ contact }: { contact: ContactListItem }) {
   const next = contact.messages.find((m) => m.state === "scheduled" || m.state === "sending");
   const lastSent = [...contact.messages].reverse().find((m) => m.state === "sent");
@@ -205,11 +239,16 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
+  const [resumes, setResumes] = useState<Resume[]>([]);
   const reload = useCallback(() => setTick((t) => t + 1), []);
 
   useEffect(() => {
     api.listBatches().then(setBatches, () => {});
   }, [tick]);
+
+  useEffect(() => {
+    api.listResumes().then(setResumes, () => {});
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -331,6 +370,10 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
                     {c.company} · {c.role}
                   </div>
                   {c.error && <div className="field-error">{c.error}</div>}
+                  {c.attachment && <div className="cell-secondary attachment-line">Attachment: {c.attachment.displayName}</div>}
+                  {resumes.length > 0 && (c.status === "uploaded" || c.status === "scheduled") && !c.messages.some((m) => m.kind === "initial" && m.state !== "scheduled") && (
+                    <ResumePick key={`${c.id}:${c.resumeId ?? ""}`} contact={c} resumes={resumes} onDone={reload} />
+                  )}
                 </td>
                 <td>
                   <StatusBadge status={c.status} />

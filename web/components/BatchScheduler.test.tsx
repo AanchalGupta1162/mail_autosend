@@ -144,4 +144,33 @@ describe("BatchScheduler", () => {
     expect(seen.map((c) => `${c.method} ${c.url}`)).toEqual(["POST /api/batches/b-1/schedule", "PUT /api/contacts/c-2/schedule"]);
     expect(JSON.parse(String(seen[0]!.body)).contactIds).toEqual(["c-1"]);
   });
+
+  it("offers the resume library, preselects the default, shows it as the attachment, and sends the pick with the bulk schedule", async () => {
+    const seen = stubFetch(() => json({ messages: [] }, 201));
+    const resumes = [
+      { id: "r-1", displayName: "General SWE", fileName: "g.pdf", sizeBytes: 1, sha256: "a", isDefault: true, createdAt: "", usage: { pendingMessages: 0, batches: 0, contacts: 0 } },
+      { id: "r-2", displayName: "Backend", fileName: "b.pdf", sizeBytes: 1, sha256: "b", isDefault: false, createdAt: "", usage: { pendingMessages: 0, batches: 0, contacts: 0 } },
+    ];
+    render(<BatchScheduler upload={upload()} resumes={resumes} />);
+    const picker = screen.getByRole("combobox", { name: /resume to attach/i });
+    expect(picker).toHaveValue("r-1");
+    expect(screen.getAllByText(/Attachment: General SWE/).length).toBeGreaterThan(0);
+    await userEvent.selectOptions(picker, "r-2");
+    expect(screen.getAllByText(/Attachment: Backend/).length).toBeGreaterThan(0);
+    fireEvent.change(sendAtInput(), { target: { value: tomorrow() } });
+    await userEvent.click(confirm());
+    await vi.waitFor(() => expect(seen.find((c) => c.url.endsWith("/schedule"))).toBeTruthy());
+    expect(JSON.parse(String(seen.find((c) => c.url.endsWith("/schedule"))!.body))).toMatchObject({ resumeId: "r-2" });
+  });
+
+  it("without any library resume there is no picker and no resumeId is sent", async () => {
+    const seen = stubFetch(() => json({ messages: [] }, 201));
+    render(<BatchScheduler upload={upload()} />);
+    expect(screen.queryByRole("combobox", { name: /resume to attach/i })).toBeNull();
+    expect(screen.getByText(/no resumes in the library/i)).toBeInTheDocument();
+    fireEvent.change(sendAtInput(), { target: { value: tomorrow() } });
+    await userEvent.click(confirm());
+    await vi.waitFor(() => expect(seen.find((c) => c.url.endsWith("/schedule"))).toBeTruthy());
+    expect(JSON.parse(String(seen.find((c) => c.url.endsWith("/schedule"))!.body))).not.toHaveProperty("resumeId");
+  });
 });

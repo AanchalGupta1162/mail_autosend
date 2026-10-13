@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { json, stubFetch } from "@/test/fetch";
 import { ContactsView } from "./ContactsView";
@@ -71,5 +71,31 @@ describe("ContactsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send again" }));
     await vi.waitFor(() => expect(seen.find((c) => c.method === "POST")?.url).toBe("/api/messages/m-9/resolve"));
     expect(JSON.parse(seen.find((c) => c.method === "POST")!.body as string)).toEqual({ action: "requeue" });
+  });
+
+  it("shows which resume goes out and lets the operator pick a per-contact override", async () => {
+    const withAtt: ContactListItem = { ...row, status: "uploaded", messages: [], attachment: { id: "r-1", displayName: "General SWE", source: "default" } };
+    const seen = stubFetch((c) => {
+      if (c.url === "/api/batches") return json({ batches: [] });
+      if (c.url === "/api/resumes") return json({ resumes: [{ id: "r-1", displayName: "General SWE", isDefault: true }, { id: "r-2", displayName: "Backend", isDefault: false }] });
+      if (c.method === "PUT") return json({ contact: { ...withAtt, resumeId: "r-2" } });
+      return json({ contacts: [withAtt], total: 1, page: 1, pageSize: 25 });
+    });
+    render(<ContactsView />);
+    const select = await screen.findByRole("combobox", { name: /resume for jo@acme.com/i });
+    expect(screen.getByText(/Attachment: General SWE/)).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: /default \(General SWE\)/i })).toBeInTheDocument();
+    await userEvent.selectOptions(select, "r-2");
+    await vi.waitFor(() => expect(seen.find((c) => c.method === "PUT")).toBeTruthy());
+    expect(seen.find((c) => c.method === "PUT")!.url).toBe("/api/contacts/c-1/resume");
+    expect(JSON.parse(String(seen.find((c) => c.method === "PUT")!.body))).toEqual({ resumeId: "r-2" });
+  });
+
+  it("does not offer a resume picker once the email is sent, only the attachment text", async () => {
+    const sent: ContactListItem = { ...row, status: "sent", messages: [{ id: "m-1", kind: "initial", state: "sent", scheduledFor: "2030-02-01T09:00:00Z", sentAt: "2030-02-01T09:00:10Z" }], attachment: { id: "r-1", displayName: "General SWE", source: "scheduled" } };
+    stubFetch((c) => (c.url === "/api/batches" ? json({ batches: [] }) : c.url === "/api/resumes" ? json({ resumes: [] }) : json({ contacts: [sent], total: 1, page: 1, pageSize: 25 })));
+    render(<ContactsView />);
+    expect(await screen.findByText(/Attachment: General SWE/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /resume for/i })).toBeNull();
   });
 });
