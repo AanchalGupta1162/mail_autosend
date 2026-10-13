@@ -57,6 +57,7 @@ export function defaultBatchName(originalname) {
 }
 
 function loadSignature(config) {
+  if (config?.signatureHtml) return config.signatureHtml;
   if (!config?.signaturePath) return "";
   try {
     return readFileSync(config.signaturePath, "utf8");

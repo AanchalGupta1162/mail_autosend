@@ -6,7 +6,9 @@ import { renderFollowup } from "../domain/template.js";
 
 // Dry-run is lenient (unsigned preview mail). In real mode a configured signature that cannot be
 // read must stop the send: throws an error classified as a retryable pre-send failure (ENOENT/EACCES).
+// SIGNATURE_HTML (inline, from env/secret store) takes precedence over SIGNATURE_PATH.
 export function loadSignature(config) {
+  if (config?.signatureHtml) return config.signatureHtml;
   if (!config?.signaturePath) return "";
   try {
     return readFileSync(config.signaturePath, "utf8");

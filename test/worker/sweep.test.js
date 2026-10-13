@@ -431,3 +431,18 @@ test("1-3 candidates all failing non-fatally => ok:false, lastSuccessAt unchange
     assert.equal(st.lastSuccessAt, before.lastSuccessAt, `n=${n}`);
   }
 });
+
+test("SWEEP_MAX_AGE_MINUTES (config.sweepMaxAgeMinutes) sets the follow-up hold threshold; default stays 60 min when unset", async () => {
+  const now = new Date();
+  const set = (v) => pool.query("insert into settings(key,value) values('sweep_state',$1) on conflict (key) do update set value=excluded.value", [JSON.stringify(v)]);
+  const ago = (min) => ({ ok: true, lastSuccessAt: new Date(now.getTime() - min * 60_000).toISOString() });
+  const cfg = { dryRun: false, replySweepEnabled: true, sweepMaxAgeMinutes: 90 };
+  await set(ago(80));
+  assert.equal(await followupSendsAllowed(pool, cfg, now), true, "80 min < 90");
+  assert.equal(await followupSendsAllowed(pool, { ...cfg, sweepMaxAgeMinutes: 60 }, now), false, "80 min > 60");
+  await set(ago(95));
+  assert.equal(await followupSendsAllowed(pool, cfg, now), false, "95 min > 90");
+  assert.equal(await followupSendsAllowed(pool, { ...cfg, sweepMaxAgeMinutes: 120 }, now), true, "95 min < 120");
+  await set(ago(70));
+  assert.equal(await followupSendsAllowed(pool, { dryRun: false, replySweepEnabled: true }, now), false, "no setting: legacy 60 min");
+});

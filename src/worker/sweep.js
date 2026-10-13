@@ -2,7 +2,7 @@ import { createReplyChecker } from "../imap.js";
 import { markReplied } from "../domain/contacts.js";
 
 export const SWEEP_WINDOW_DAYS = 30; // only initials sent within this many days are checked
-export const SWEEP_STALE_MS = 60 * 60_000; // follow-ups are held when the last good sweep is older
+export const SWEEP_STALE_MS = 60 * 60_000; // fallback when config.sweepMaxAgeMinutes (SWEEP_MAX_AGE_MINUTES) is unset
 const DAY_MS = 86_400_000;
 const STATE_KEY = "sweep_state";
 const FATAL_CODES = new Set([
@@ -47,7 +47,8 @@ async function writeState(db, value) {
 export async function followupSendsAllowed(pool, config, now = new Date()) {
   if (config.dryRun || config.replySweepEnabled !== true) return true;
   const last = (await readState(pool))?.lastSuccessAt;
-  return Boolean(last) && now.getTime() - new Date(last).getTime() <= SWEEP_STALE_MS;
+  const maxAgeMs = config.sweepMaxAgeMinutes ? config.sweepMaxAgeMinutes * 60_000 : SWEEP_STALE_MS;
+  return Boolean(last) && now.getTime() - new Date(last).getTime() <= maxAgeMs;
 }
 
 // Oldest-attempted first (never-attempted first), so no contact is starved by a failing one.

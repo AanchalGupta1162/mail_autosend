@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { inTx } from "../domain/contacts.js";
 import { followupDueAt } from "../domain/schedule.js";
 import { getTemplate } from "../domain/template.js";
+import { getSendWindow, isInSendWindow } from "../domain/sendWindow.js";
 import { classifySendError } from "./classify.js";
 import { followupSendsAllowed } from "./sweep.js";
 import { buildMail, createResumeCache, loadAttachments, loadSignature, newMessageId } from "./send.js";
@@ -338,8 +339,16 @@ export async function runTick({
   let attemptedBefore = false;
   // One message per iteration: only the row in flight is ever in `sending`; cap and the
   // per-tick limit are re-evaluated before every claim.
+  // Real sends are claimed only inside the daily window when it is enforced (production). Dry-run and
+  // local polling are never gated. Re-checked before every claim, so a window that closes mid-tick stops it.
+  const windowEnforced = config.sendWindowEnforced === true && !config.dryRun;
+  const sendWindow = windowEnforced ? await getSendWindow(pool) : null;
   for (let i = 0; i < config.maxPerTick; i++) {
     if (shouldStop()) break;
+    if (windowEnforced && !isInSendWindow(sendWindow, clock())) {
+      summary.outsideWindow = true;
+      break;
+    }
     // Follow-ups wait while reply detection is stale (a reply could be sitting unseen).
     const followupsAllowed = await followupSendsAllowed(pool, config, clock());
     const [row] = await claim(pool, config, clock(), 1, followupsAllowed);

@@ -23,6 +23,7 @@
     "express": "^4.22.3",
     "express-rate-limit": "^8.7.1",
     "express-session": "^1.19.0",
+    "google-auth-library": "11.3.0",
     "helmet": "^8.3.0",
     "imapflow": "^1.0.167",
     "multer": "^2.4.0",

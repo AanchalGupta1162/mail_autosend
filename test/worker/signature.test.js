@@ -102,3 +102,40 @@ test("real mode: a signature file that vanished after startup holds the queue be
   const dry = await runTick({ pool, mailer: { sendMail: async (o) => ({ messageId: o.messageId }) }, config: { ...gone, dryRun: true }, sleep: async () => {}, logger: silent });
   assert.equal(dry.sent, 1);
 });
+
+test("SIGNATURE_HTML wins over SIGNATURE_PATH in the real send path and needs no file", async () => {
+  await pool.query("DELETE FROM settings WHERE key = 'send_hold'"); // left by the previous test
+  const email = "sig4@example.com";
+  const { contacts } = await seedBatch(pool, [email], { overrides: { [email]: { status: "scheduled" } } });
+  await addMessage(pool, contacts[0].id, {});
+  const inline = { ...config, signatureHtml: "<p>Inline <strong>Signer</strong> sig-inline-marker</p>", signaturePath: path.resolve("test/fixtures/does-not-exist.html") };
+  const out = await runTick({ pool, mailer: smtp.transport(), config: inline, sleep: async () => {}, logger: silent });
+  assert.equal(out.sent, 1);
+  const body = decode(smtp.state.bodies[0]);
+  assert.ok(body.includes("sig-inline-marker"));
+  assert.ok(!body.includes("Test Signer"), "the file was not used");
+});
+
+test("loadSignature prefers config.signatureHtml, then the file", async () => {
+  const { loadSignature } = await import("../../src/worker/send.js");
+  assert.equal(loadSignature({ signatureHtml: "<i>x</i>", signaturePath: SIGNATURE }), "<i>x</i>");
+  assert.match(loadSignature({ signaturePath: SIGNATURE }), /Test Signer/);
+  assert.equal(loadSignature({}), "");
+});
+
+test("the batch preview endpoint shows SIGNATURE_HTML when set", async () => {
+  const t = await startTestApp({ SIGNATURE_HTML: "<p>Inline Preview Signer</p>" });
+  try {
+    await t.addUser("admin");
+    const c = t.client();
+    await c.login();
+    const f = new FormData();
+    const csv = '"Company","Role","Person","Email","Subject","Mail Text","Follow-up Text"\n"Acme","SWE","Jo","jo@acme.example.com","S","Hi Jo,\n\nHello.","" \n';
+    f.append("file", new Blob([csv], { type: "text/csv" }), "l.csv");
+    const r = await c.raw("POST", "/api/batches", { rawBody: f });
+    assert.equal(r.status, 201, r.text);
+    assert.match(r.json.contacts[0].preview.text, /Inline Preview Signer/);
+  } finally {
+    await t.close();
+  }
+});
