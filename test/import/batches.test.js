@@ -93,6 +93,8 @@ test("bad rows are reported and skipped; good rows are inserted", async () => {
   assert.equal(r.status, 201);
   assert.deepEqual(r.json.contacts.map((x) => x.email), ["ok1@example.com", "ok3@example.com"]);
   assert.deepEqual(r.json.errors.map((e) => e.row), [3, 4, 6]);
+  // Each contact carries its own CSV row number (the client must not infer it from order).
+  assert.deepEqual(r.json.contacts.map((x) => x.row), [2, 5]);
 });
 
 test("all rows invalid -> 422 with errors and no batch created", async () => {

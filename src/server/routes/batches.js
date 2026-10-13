@@ -96,6 +96,7 @@ export function batchesRouter({ pool, config }) {
         [rows.map((r) => r.email.toLowerCase())],
       );
       const existingStatus = new Map(existing.rows.map((r) => [r.email, r.status]));
+      const rowByEmail = new Map(rows.map((r) => [r.email.toLowerCase(), r.row]));
       const warnings = rows
         .filter((r) => existingStatus.has(r.email.toLowerCase()))
         .map((r) => {
@@ -128,7 +129,8 @@ export function batchesRouter({ pool, config }) {
       });
       res.status(201).json({
         batch: serializeBatch(result.batch),
-        contacts: result.contacts.map(withPreview),
+        // `row` = the contact's line in the uploaded file (emails are unique per batch).
+        contacts: result.contacts.map((c) => ({ ...withPreview(c), row: rowByEmail.get(c.email.toLowerCase()) ?? null })),
         errors,
         warnings,
       });

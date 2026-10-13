@@ -29,7 +29,7 @@ function SelectAll({ state, onChange }: { state: "none" | "some" | "all"; onChan
 }
 
 export function BatchScheduler({ upload, now = () => new Date() }: Props) {
-  const rows = useMemo(() => buildPreviewRows(upload.contacts, upload.errors, upload.warnings), [upload]);
+  const rows = useMemo(() => buildPreviewRows(upload.contacts, upload.warnings), [upload]);
   const [selected, setSelected] = useState<string[]>(() => initialSelection(rows));
   const [sendAt, setSendAt] = useState("");
   const [stagger, setStagger] = useState("");

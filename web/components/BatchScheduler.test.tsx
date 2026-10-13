@@ -5,9 +5,10 @@ import { json, stubFetch } from "@/test/fetch";
 import { BatchScheduler } from "./BatchScheduler";
 import { resetApiState } from "@/lib/api";
 import { toLocalInputValue } from "@/lib/schedule";
-import type { ContactWithPreview, UploadResult } from "@/lib/types";
+import type { UploadedContact, UploadResult } from "@/lib/types";
 
-const contact = (id: string, email: string, text = "Hi there"): ContactWithPreview => ({
+const contact = (id: string, email: string, text = "Hi there", row = Number(id.replace(/\D/g, "")) + 1): UploadedContact => ({
+  row,
   id,
   batchId: "b-1",
   company: "Acme",

@@ -1,7 +1,6 @@
-// Preview-table selection. Rows come back from POST /api/batches in file order; rejected rows
-// are not inserted, so a contact's CSV row is the n-th row number not listed in `errors`
-// (data rows start at 2, see src/import/parseCsv.js).
-import type { ContactStatus, ContactWithPreview, RowIssue, RowWarning } from "./types";
+// Preview-table selection. POST /api/batches returns each contact with its own CSV `row`
+// (data rows start at 2, see src/import/parseCsv.js); warnings refer to the same numbers.
+import type { ContactStatus, ContactWithPreview, RowWarning, UploadedContact } from "./types";
 
 /** A cross-batch duplicate with one of these statuses is refused by the server. */
 const BLOCKING: ReadonlySet<ContactStatus> = new Set(["replied", "bounced", "opted_out"]);
@@ -14,15 +13,11 @@ export interface PreviewRow {
   blocked: boolean;
 }
 
-export function buildPreviewRows(contacts: ContactWithPreview[], errors: RowIssue[], warnings: RowWarning[]): PreviewRow[] {
-  const rejected = new Set(errors.map((e) => e.row));
+export function buildPreviewRows(contacts: UploadedContact[], warnings: RowWarning[]): PreviewRow[] {
   const byRow = new Map(warnings.map((w) => [w.row, w]));
-  let row = 1;
   return contacts.map((contact) => {
-    do row++;
-    while (rejected.has(row));
-    const warning = byRow.get(row) ?? null;
-    return { contact, row, warning, blocked: warning ? BLOCKING.has(warning.existingStatus) : false };
+    const warning = byRow.get(contact.row) ?? null;
+    return { contact, row: contact.row, warning, blocked: warning ? BLOCKING.has(warning.existingStatus) : false };
   });
 }
 

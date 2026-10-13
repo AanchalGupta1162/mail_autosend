@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildPreviewRows, initialSelection, selectionState, setAll, toggle } from "./selection";
-import type { ContactWithPreview, RowIssue, RowWarning } from "./types";
+import type { RowWarning, UploadedContact } from "./types";
 
-const contact = (id: string, email = `${id}@x.com`): ContactWithPreview => ({
+let nextRow = 2;
+const contact = (id: string, row?: number, email = `${id}@x.com`): UploadedContact => ({
+  row: row ?? nextRow++,
   id,
   batchId: "b",
   company: "Acme",
@@ -22,10 +24,9 @@ const contact = (id: string, email = `${id}@x.com`): ContactWithPreview => ({
 });
 
 describe("buildPreviewRows", () => {
-  it("recovers each contact's CSV row number by skipping rejected rows", () => {
-    // file rows 2..6; rows 3 and 5 were rejected, so a,b,c are rows 2,4,6
-    const errors: RowIssue[] = [{ row: 5, message: "x" }, { row: 3, message: "y" }];
-    const rows = buildPreviewRows([contact("a"), contact("b"), contact("c")], errors, []);
+  it("uses the row number the server reports for each contact (no inference from order)", () => {
+    // rows 3 and 5 were rejected, so a,b,c are rows 2,4,6
+    const rows = buildPreviewRows([contact("a", 2), contact("b", 4), contact("c", 6)], []);
     expect(rows.map((r) => [r.contact.id, r.row])).toEqual([["a", 2], ["b", 4], ["c", 6]]);
   });
 
@@ -34,7 +35,7 @@ describe("buildPreviewRows", () => {
       { row: 2, message: "Email is already in another batch (status: replied)", existingStatus: "replied" },
       { row: 3, message: "Email is already in another batch (status: sent)", existingStatus: "sent" },
     ];
-    const rows = buildPreviewRows([contact("a"), contact("b"), contact("c")], [], warnings);
+    const rows = buildPreviewRows([contact("a", 2), contact("b", 3), contact("c", 4)], warnings);
     expect(rows.map((r) => [r.contact.id, r.warning?.existingStatus ?? null, r.blocked])).toEqual([
       ["a", "replied", true],
       ["b", "sent", false],
@@ -48,7 +49,7 @@ describe("selection", () => {
     { row: 2, message: "", existingStatus: "opted_out" },
     { row: 3, message: "", existingStatus: "scheduled" },
   ];
-  const rows = buildPreviewRows([contact("a"), contact("b"), contact("c"), contact("d")], [], warnings);
+  const rows = buildPreviewRows([contact("a", 2), contact("b", 3), contact("c", 4), contact("d", 5)], warnings);
 
   it("starts with every clean row selected; warned rows start unselected", () => {
     expect(initialSelection(rows)).toEqual(["c", "d"]);

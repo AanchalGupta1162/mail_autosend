@@ -54,6 +54,11 @@ export interface ContactWithPreview extends Contact {
   preview: Preview;
 }
 
+/** A contact as returned by POST /api/batches: `row` is its line number in the uploaded CSV. */
+export interface UploadedContact extends ContactWithPreview {
+  row: number;
+}
+
 /** Live (non-cancelled) message as listed on GET /api/contacts. */
 export interface MessageRef {
   id: string;
@@ -91,7 +96,7 @@ export interface RowWarning extends RowIssue {
 
 export interface UploadResult {
   batch: Batch;
-  contacts: ContactWithPreview[];
+  contacts: UploadedContact[];
   errors: RowIssue[];
   warnings: RowWarning[];
 }
