@@ -182,3 +182,27 @@ describe("api client 401 and errors", () => {
     ]);
   });
 });
+
+describe("resume library calls", () => {
+  it("uploads multipart with the CSRF token, and lists/renames/defaults/deletes/sets override", async () => {
+    const f = fakeFetch(() => json({ resume: { id: "r" }, resumes: [], contact: {}, ok: true }));
+    const api = createApi({ fetch: f.fn, onUnauthorized: vi.fn() });
+    await api.uploadResume(new File(["%PDF-"], "cv.pdf", { type: "application/pdf" }), " My CV ");
+    const up = f.calls.find((c) => c.method === "POST")!;
+    expect(up.url).toBe("/api/resumes");
+    expect(up.headers.get("X-CSRF-Token")).toBe("tok-1");
+    expect(up.headers.get("content-type")).toBeNull();
+    expect((up.body as FormData).get("displayName")).toBe("My CV");
+    await api.listResumes();
+    await api.updateResume("r/1", { displayName: "N" });
+    await api.deleteResume("r/1");
+    await api.setContactResume("c1", null);
+    await api.scheduleBatch("b1", { contactIds: ["c1"], sendAt: "2030-01-01T00:00:00Z", resumeId: "r1" });
+    const by = (m: string, u: string) => f.calls.find((c) => c.method === m && c.url === u);
+    expect(by("GET", "/api/resumes")).toBeTruthy();
+    expect(by("PUT", "/api/resumes/r%2F1")).toBeTruthy();
+    expect(by("DELETE", "/api/resumes/r%2F1")).toBeTruthy();
+    expect(JSON.parse(String(by("PUT", "/api/contacts/c1/resume")!.body))).toEqual({ resumeId: null });
+    expect(JSON.parse(String(by("POST", "/api/batches/b1/schedule")!.body))).toMatchObject({ resumeId: "r1" });
+  });
+});

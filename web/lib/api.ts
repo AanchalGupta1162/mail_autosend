@@ -16,6 +16,7 @@ import type {
   FollowupTemplate,
   Message,
   Refusal,
+  Resume,
   RowIssue,
   SweepResult,
   UploadResult,
@@ -198,11 +199,34 @@ export function createApi(options: ApiOptions = {}) {
     },
 
     // Scheduling (bulk is all-or-nothing: a 409 carries `refused`)
-    async scheduleBatch(batchId: string, body: { contactIds: string[]; sendAt: string; staggerMinutes?: number }): Promise<Message[]> {
+    async scheduleBatch(batchId: string, body: { contactIds: string[]; sendAt: string; staggerMinutes?: number; resumeId?: string }): Promise<Message[]> {
       return (await request<{ messages: Message[] }>("POST", `/api/batches/${seg(batchId)}/schedule`, { json: body })).messages;
     },
-    async scheduleContact(contactId: string, sendAt: string): Promise<Message> {
-      return (await request<{ message: Message }>("PUT", `/api/contacts/${seg(contactId)}/schedule`, { json: { sendAt } })).message;
+    async scheduleContact(contactId: string, sendAt: string, resumeId?: string): Promise<Message> {
+      const json = resumeId ? { sendAt, resumeId } : { sendAt };
+      return (await request<{ message: Message }>("PUT", `/api/contacts/${seg(contactId)}/schedule`, { json })).message;
+    },
+    /** Per-contact resume override; null goes back to the batch/default resume. */
+    async setContactResume(contactId: string, resumeId: string | null): Promise<Contact> {
+      return (await request<{ contact: Contact }>("PUT", `/api/contacts/${seg(contactId)}/resume`, { json: { resumeId } })).contact;
+    },
+
+    // Resume library
+    async listResumes(): Promise<Resume[]> {
+      const r = await request<{ resumes?: Resume[] } | null>("GET", "/api/resumes");
+      return Array.isArray(r?.resumes) ? r.resumes : [];
+    },
+    async uploadResume(file: File, displayName: string): Promise<Resume> {
+      const form = new FormData();
+      form.append("displayName", displayName.trim()); // fields before the file, as multer expects
+      form.append("file", file, file.name);
+      return (await request<{ resume: Resume }>("POST", "/api/resumes", { form })).resume;
+    },
+    async updateResume(id: string, body: { displayName?: string; isDefault?: boolean }): Promise<Resume> {
+      return (await request<{ resume: Resume }>("PUT", `/api/resumes/${seg(id)}`, { json: body })).resume;
+    },
+    async deleteResume(id: string): Promise<void> {
+      await request("DELETE", `/api/resumes/${seg(id)}`);
     },
     setFollowup(contactId: string, body: { enabled: boolean; delayDays?: number }): Promise<FollowupResult> {
       return request("PUT", `/api/contacts/${seg(contactId)}/followup`, { json: body });

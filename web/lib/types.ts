@@ -41,6 +41,8 @@ export interface Contact {
   followupDelayDays: number;
   repliedAt: string | null;
   error: string | null;
+  /** Per-contact resume override; null/absent means batch or default. */
+  resumeId?: string | null;
   createdAt: string;
 }
 
@@ -50,8 +52,33 @@ export interface Preview {
   text: string;
 }
 
+/** Which resume goes out with a contact's first email (display name only; the file is never sent to the browser). */
+export interface Attachment {
+  id: string | null;
+  displayName: string;
+  source: "scheduled" | "contact" | "batch" | "default" | "legacy";
+}
+
+export interface ResumeUsage {
+  pendingMessages: number;
+  batches: number;
+  contacts: number;
+}
+
+export interface Resume {
+  id: string;
+  displayName: string;
+  fileName: string;
+  sizeBytes: number;
+  sha256: string;
+  isDefault: boolean;
+  createdAt: string;
+  usage: ResumeUsage;
+}
+
 export interface ContactWithPreview extends Contact {
   preview: Preview;
+  attachment?: Attachment | null;
 }
 
 /** A contact as returned by POST /api/batches: `row` is its line number in the uploaded CSV. */
@@ -69,6 +96,7 @@ export interface MessageRef {
 }
 
 export interface ContactListItem extends Contact {
+  attachment?: Attachment | null;
   messages: MessageRef[];
 }
 
