@@ -22,3 +22,15 @@ test("reserved keys cannot be overridden by fields", () => {
   log.info("m", { severity: "CRITICAL", message: "spoof" });
   assert.deepEqual(JSON.parse(out[0]), { severity: "INFO", message: "m" });
 });
+
+test("an Error as the second argument logs only name and code, never message or stack", () => {
+  const out = [], err = [];
+  const log = createJsonLogger({ out: (l) => out.push(l), err: (l) => err.push(l) });
+  const e = Object.assign(new Error("auth failed for pass=hunter2"), { code: "EAUTH" });
+  log.error("send failed", e);
+  const line = err[0];
+  assert.deepEqual(JSON.parse(line), { severity: "ERROR", message: "send failed", name: "Error", code: "EAUTH" });
+  assert.ok(!line.includes("hunter2") && !line.includes("at "), "no message or stack");
+  log.warn("dom", { name: "X", code: 5, message: "secret", stack: "s" });
+  assert.deepEqual(JSON.parse(err[1]), { severity: "WARNING", message: "dom", name: "X", code: 5 });
+});

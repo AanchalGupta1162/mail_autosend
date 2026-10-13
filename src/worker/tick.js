@@ -340,7 +340,8 @@ export async function runTick({
   // One message per iteration: only the row in flight is ever in `sending`; cap and the
   // per-tick limit are re-evaluated before every claim.
   // Real sends are claimed only inside the daily window when it is enforced (production). Dry-run and
-  // local polling are never gated. Re-checked before every claim, so a window that closes mid-tick stops it.
+  // local polling are never gated. Re-checked before every claim and again after the gap sleep, so a window
+  // that closes mid-tick stops it. The window is read once per tick: an edit mid-tick applies from the next tick.
   const windowEnforced = config.sendWindowEnforced === true && !config.dryRun;
   const sendWindow = windowEnforced ? await getSendWindow(pool) : null;
   for (let i = 0; i < config.maxPerTick; i++) {
@@ -363,6 +364,11 @@ export async function runTick({
         await sleep(Math.round((min + random() * (max - min)) * 1000), signal);
       }
       if (shouldStop()) break;
+      // The gap sleep can run past the close of the window: re-check before the SMTP call and hand the row back.
+      if (windowEnforced && !isInSendWindow(sendWindow, clock())) {
+        summary.outsideWindow = true;
+        break;
+      }
       entered = true;
     } finally {
       if (!entered) await release(pool, row);

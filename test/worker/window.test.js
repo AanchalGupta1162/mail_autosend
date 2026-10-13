@@ -114,3 +114,25 @@ test("the window closing mid-tick stops further claims", async () => {
   assert.equal(out.outsideWindow, true);
   assert.equal((await pool.query("SELECT count(*)::int n FROM messages WHERE state='scheduled'")).rows[0].n, 2);
 });
+
+test("the window closing during the gap sleep releases the claimed row without sending", async () => {
+  await dueInitials(2);
+  let clock = new Date("2026-10-14T04:29:50Z"); // 09:59:50 IST
+  const m = mailer();
+  const out = await runTick({
+    pool,
+    mailer: m,
+    config: { ...baseConfig, sendGapSecondsMin: 15, sendGapSecondsMax: 45 },
+    now: () => clock,
+    sleep: async () => {
+      clock = new Date("2026-10-14T04:30:30Z"); // 10:00:30 IST
+    },
+    logger: silent,
+  });
+  assert.equal(m.calls.length, 1, "no SMTP call for the second message");
+  assert.equal(out.sent, 1);
+  assert.equal(out.outsideWindow, true);
+  const rows = (await pool.query("SELECT state, attempts, message_id, claimed_at FROM messages WHERE state <> 'sent'")).rows;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0], { state: "scheduled", attempts: 0, message_id: null, claimed_at: null });
+});
