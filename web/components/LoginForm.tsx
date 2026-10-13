@@ -2,8 +2,13 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { safeNext } from "@/lib/guard";
+import { Notice } from "./Notice";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 // Fixed copy only: never echo server details (account existence, lock state, IPs).
 function loginMessage(err: unknown): string {
@@ -48,10 +53,10 @@ export function LoginForm({ next }: { next: string }) {
   }
 
   return (
-    <form className="login-form" onSubmit={onSubmit} noValidate aria-describedby={error ? "login-error" : undefined}>
-      <div className="field">
-        <label htmlFor="username">Username</label>
-        <input
+    <form className="space-y-4" onSubmit={onSubmit} noValidate aria-describedby={error ? "login-error" : undefined}>
+      <div className="space-y-1.5">
+        <Label htmlFor="username">Username</Label>
+        <Input
           id="username"
           name="username"
           autoComplete="username"
@@ -62,9 +67,9 @@ export function LoginForm({ next }: { next: string }) {
           aria-invalid={error ? true : undefined}
         />
       </div>
-      <div className="field">
-        <label htmlFor="password">Password</label>
-        <input
+      <div className="space-y-1.5">
+        <Label htmlFor="password">Password</Label>
+        <Input
           id="password"
           name="password"
           type="password"
@@ -75,13 +80,14 @@ export function LoginForm({ next }: { next: string }) {
         />
       </div>
       {error && (
-        <p className="callout callout-danger" role="alert" id="login-error">
+        <Notice tone="danger" role="alert" id="login-error">
           {error}
-        </p>
+        </Notice>
       )}
-      <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
+      <Button type="submit" className="w-full" disabled={busy}>
+        {busy && <Loader2 className="animate-spin" />}
         {busy ? "Signing in…" : "Sign in"}
-      </button>
+      </Button>
     </form>
   );
 }

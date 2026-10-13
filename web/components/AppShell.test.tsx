@@ -15,7 +15,7 @@ describe("AppShell mode indicator", () => {
     stubFetch(() => json({ dryRun: true, followupsHeld: false }));
     render(<AppShell>page</AppShell>);
     expect(await screen.findByText(/never delivered/i)).toBeInTheDocument();
-    expect(screen.getByText("Dry run", { selector: ".mode-chip" })).toBeInTheDocument();
+    expect(document.querySelector("[data-slot=mode-chip]")).toHaveTextContent("Dry run");
   });
 
   it("says the mode is unknown when the dashboard cannot be loaded, instead of showing nothing", async () => {
