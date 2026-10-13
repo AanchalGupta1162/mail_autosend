@@ -1,5 +1,3 @@
-import path from "node:path";
-import { existsSync } from "node:fs";
 import express from "express";
 import helmet from "helmet";
 import session from "express-session";
@@ -15,9 +13,9 @@ import { errorHandler, notFound } from "./errors.js";
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
-// createApp({pool, config, mailer?, logger?, staticDir?}) -> express app.
+// createApp({pool, config, mailer?, logger?, loginRateLimit?}) -> express app.
 // The session table comes from migration 002 (resolved via the pool's search_path).
-export function createApp({ pool, config, mailer, checkReply, logger = console, staticDir, loginRateLimit = {} } = {}) {
+export function createApp({ pool, config, mailer, checkReply, logger = console, loginRateLimit = {} } = {}) {
   if (!pool) throw new Error("pool is required");
   if (typeof config?.sessionSecret !== "string" || config.sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters");
@@ -97,12 +95,6 @@ export function createApp({ pool, config, mailer, checkReply, logger = console, 
   app.use("/api", schedulingRouter({ pool }));
   app.use("/api", dashboardRouter({ pool, config, checkReply, logger }));
   app.use("/api", notFound);
-
-  const dist = staticDir && existsSync(path.join(staticDir, "index.html")) ? staticDir : null;
-  if (dist) {
-    app.use(express.static(dist, { index: false }));
-    app.get(/^\/(?!api(\/|$)).*/, (_req, res) => res.sendFile(path.join(dist, "index.html")));
-  }
 
   app.use(notFound);
   app.use(errorHandler(logger));

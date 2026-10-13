@@ -51,8 +51,3 @@ export function buildFollowUpMailOptions(config, row) {
     references: row.messageId,
   };
 }
-
-export async function send(transport, mailOptions) {
-  const info = await transport.sendMail(mailOptions);
-  return info.messageId;
-}

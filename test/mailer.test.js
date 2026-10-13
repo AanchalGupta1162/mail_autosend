@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildInitialMailOptions, buildFollowUpMailOptions, send } from "../src/mailer.js";
+import { buildInitialMailOptions, buildFollowUpMailOptions } from "../src/mailer.js";
 
 const config = {
   gmailUser: "me@gmail.com",
@@ -37,12 +37,4 @@ test("buildFollowUpMailOptions prefixes the subject with Re: and sets threading 
   assert.equal(options.references, "<original@mail.gmail.com>");
   assert.match(options.html, /<strong>bumping<\/strong>/);
   assert.equal(options.attachments, undefined);
-});
-
-test("send resolves to the transport's messageId", async () => {
-  const fakeTransport = {
-    sendMail: async () => ({ messageId: "<new@mail.gmail.com>" }),
-  };
-  const messageId = await send(fakeTransport, { to: "x@y.com" });
-  assert.equal(messageId, "<new@mail.gmail.com>");
 });

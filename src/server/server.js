@@ -1,5 +1,3 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { loadServerConfig } from "./env.js";
 import { createPool } from "../db/pool.js";
 import { migrate } from "../db/migrate.js";
@@ -10,8 +8,6 @@ import { runTick } from "../worker/tick.js";
 import { runSweep } from "../worker/sweep.js";
 
 const SWEEP_INTERVAL_MS = 10 * 60_000;
-
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 let config;
 try {
@@ -28,7 +24,7 @@ const pool = createPool({
 await migrate(pool);
 
 const mailer = createMailer(config);
-const app = createApp({ pool, config, mailer, staticDir: path.join(root, "web", "dist") });
+const app = createApp({ pool, config, mailer });
 const server = app.listen(config.port, () => console.log(`Listening on port ${config.port}`));
 
 // The send worker runs in this process, never under test (tests call runTick directly).

@@ -127,17 +127,3 @@ export async function createReplyChecker(config) {
     },
   });
 }
-
-/**
- * One-shot helper (legacy CLI): true if the inbox holds a genuine reply to messageId.
- * Throws on connection/search errors; treat that as "unknown", not "no reply".
- */
-export async function checkForReply(config, messageId, opts = {}) {
-  if (!messageId) return false;
-  const checker = await createReplyChecker(config);
-  try {
-    return Boolean(await checker.check(messageId, opts));
-  } finally {
-    await checker.close();
-  }
-}
