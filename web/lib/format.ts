@@ -4,12 +4,20 @@ const dateTime = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "nu
 const dayPart = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric", month: "short" });
 const timePart = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 
+const short = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
 const toDate = (v: string | Date) => (v instanceof Date ? v : new Date(v));
 
 export function formatDateTime(v: string | Date | null | undefined): string {
   if (!v) return "—";
   const d = toDate(v);
   return Number.isNaN(d.getTime()) ? "—" : dateTime.format(d);
+}
+
+/** Compact date-time for dense lists (no weekday). */
+export function formatShort(v: string | Date): string {
+  const d = toDate(v);
+  return Number.isNaN(d.getTime()) ? "—" : short.format(d);
 }
 
 export function formatDay(v: string | Date): string {

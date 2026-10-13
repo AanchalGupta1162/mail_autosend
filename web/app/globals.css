@@ -404,6 +404,7 @@ input:disabled:not([type="checkbox"]) {
 /* ---------- Page ---------- */
 .page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   padding-bottom: 40px;
   max-width: 1280px;
@@ -461,6 +462,7 @@ input:disabled:not([type="checkbox"]) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  align-items: start;
 }
 .empty {
   color: var(--ink-3);
@@ -605,6 +607,8 @@ input:disabled:not([type="checkbox"]) {
 
 /* ---------- Tables ---------- */
 .table-wrap {
+  /* Contains the absolutely positioned .sr-only labels so they can't widen the page. */
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -617,6 +621,10 @@ input:disabled:not([type="checkbox"]) {
   width: 100%;
   border-collapse: collapse;
   font-size: 13.5px;
+}
+/* Wide tables scroll inside their frame on small screens instead of crushing columns. */
+.table:not(.table-compact) {
+  min-width: 820px;
 }
 .table th {
   text-align: left;
@@ -673,6 +681,7 @@ input:disabled:not([type="checkbox"]) {
   overflow-wrap: anywhere;
 }
 .cell-subject {
+  min-width: 22ch;
   max-width: 34ch;
   overflow-wrap: anywhere;
 }
@@ -804,6 +813,7 @@ input:disabled:not([type="checkbox"]) {
 }
 .scheduler {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .issues {
@@ -978,7 +988,7 @@ input:disabled:not([type="checkbox"]) {
 }
 .events li {
   display: grid;
-  grid-template-columns: 150px 140px minmax(0, 1fr);
+  grid-template-columns: 112px 150px minmax(0, 1fr);
   gap: 10px;
   padding: 6px 0;
   border-bottom: 1px solid var(--line);
@@ -1136,6 +1146,14 @@ input:disabled:not([type="checkbox"]) {
     grid-template-columns: minmax(0, 1fr);
     gap: 0;
   }
+  /* On phones the bar would cover half the screen: let it sit at the end of the list. */
+  .schedule-bar {
+    position: static;
+    margin: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: none;
+  }
   .schedule-bar .field,
   .schedule-bar .field-narrow {
     width: 100%;
@@ -1154,7 +1172,10 @@ input:disabled:not([type="checkbox"]) {
     grid-template-columns: minmax(0, 1fr);
   }
   .bar {
-    grid-template-columns: 84px minmax(0, 1fr) 32px;
+    grid-template-columns: 96px minmax(0, 1fr) 32px;
+  }
+  .upcoming .tag {
+    display: none;
   }
 }
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
-import { eventLabel, formatDateTime, percent, plural, statusLabel } from "@/lib/format";
+import { eventLabel, formatDateTime, formatShort, percent, plural, statusLabel } from "@/lib/format";
 import type { ContactStatus, Dashboard, SweepResult } from "@/lib/types";
 import { useMode } from "./AppShell";
 import { Postmark } from "./Postmark";
@@ -231,7 +231,7 @@ export function DashboardView() {
               {data.recentEvents.map((e) => (
                 <li key={e.id}>
                   <time className="mono event-time" dateTime={e.at}>
-                    {formatDateTime(e.at)}
+                    {formatShort(e.at)}
                   </time>
                   <span className="event-type">{eventLabel(e.type)}</span>
                   {e.email && <span className="cell-secondary mono">{e.email}</span>}
