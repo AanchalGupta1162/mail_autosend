@@ -13,5 +13,6 @@ dry_run             = true
 sweep_alert_enabled = false
 
 github_repo    = "Harshavardhan-28/mail_autosend"
+github_repository_id = "123456789" # gh api repos/Harshavardhan-28/mail_autosend --jq .id
 admin_username = "admin"
 # from_name    = "Your Name"

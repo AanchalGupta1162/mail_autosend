@@ -86,6 +86,17 @@ resource "google_cloud_run_v2_job_iam_member" "deployer_seed_admin" {
   member   = "serviceAccount:${google_service_account.github_deployer.email}"
 }
 
+# The deploy preflight lists secret versions (metadata only; roles/secretmanager.viewer cannot read payloads) to refuse a deploy
+# while a secret still holds the throwaway placeholder version 1.
+resource "google_secret_manager_secret_iam_member" "deployer_lists_versions" {
+  for_each = local.secrets
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.app[each.key].secret_id
+  role      = "roles/secretmanager.viewer"
+  member    = "serviceAccount:${google_service_account.github_deployer.email}"
+}
+
 resource "google_service_account_iam_member" "deployer_acts_as_runtime" {
   for_each = {
     backend = google_service_account.backend.name
@@ -98,11 +109,16 @@ resource "google_service_account_iam_member" "deployer_acts_as_runtime" {
   member             = "serviceAccount:${google_service_account.github_deployer.email}"
 }
 
-# --- Planner: read-only for PR plans. CI runs `terraform plan -refresh=false` (diff of config vs state), so it does not need to
-# read secret payloads or IAM policies; full-refresh drift checks are run locally by the owner.
+# --- Planner: strictly read-only. Any branch or PR of the repo can run code as this identity (the workflow file comes from
+# the PR head), so it gets no data access at all. CI runs `terraform plan -refresh=false -lock=false`: the plan is config vs the
+# state file, so the only things read are the state object and the google_project data source.
+#  * roles/browser: resourcemanager.projects.get/list only (no resource, bucket-object or secret access; deliberately NOT
+#    roles/viewer, which includes legacy object read on buckets and would expose the resume PDFs).
+#  * roles/serviceusage.serviceUsageConsumer: lets the provider bill API calls to the project.
+# Full-refresh drift checks are run locally by the owner.
 resource "google_project_iam_member" "planner" {
   for_each = toset([
-    "roles/viewer",
+    "roles/browser",
     "roles/serviceusage.serviceUsageConsumer",
   ])
 
@@ -111,9 +127,10 @@ resource "google_project_iam_member" "planner" {
   member  = "serviceAccount:${google_service_account.github_planner.email}"
 }
 
-# terraform plan takes a lock on the state, which is an object write.
+# Read-only on the state bucket (state and its versions). The plan runs with -lock=false, so no object write is needed:
+# a PR branch can neither overwrite nor delete state.
 resource "google_storage_bucket_iam_member" "planner_state" {
   bucket = var.state_bucket
-  role   = "roles/storage.objectUser"
+  role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.github_planner.email}"
 }

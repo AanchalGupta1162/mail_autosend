@@ -11,12 +11,16 @@ resource "google_artifact_registry_repository" "images" {
 
   cleanup_policy_dry_run = false
 
-  # Keep the 10 newest versions of each package and anything tagged as a release; drop the rest after 30 days.
+  # KEEP policies always win over DELETE. Pipeline images are pushed without sbom/provenance attestations (CI scans them with
+  # trivy), so one build is one version per package and keep_count is a real count of builds. Deleting by age alone could
+  # remove an image a quiet project still serves or that docs/deploy.md rollback needs, so the age cutoff is long (180 days)
+  # and the newest 30 builds of each package are never deleted regardless of age. To pin an image forever, tag it
+  # `release-<anything>` (see docs/deploy.md).
   cleanup_policies {
     id     = "keep-recent"
     action = "KEEP"
     most_recent_versions {
-      keep_count = 10
+      keep_count = 30
     }
   }
 
@@ -34,7 +38,7 @@ resource "google_artifact_registry_repository" "images" {
     action = "DELETE"
     condition {
       tag_state  = "ANY"
-      older_than = "2592000s"
+      older_than = "15552000s"
     }
   }
 

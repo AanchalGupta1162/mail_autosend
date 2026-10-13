@@ -22,6 +22,16 @@ variable "github_repo" {
   default     = "Harshavardhan-28/mail_autosend"
 }
 
+variable "github_repository_id" {
+  description = "Numeric, immutable GitHub repository id (`gh api repos/OWNER/NAME --jq .id`). Pinned in the WIF conditions so a renamed or recreated repo with the same name cannot authenticate."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.github_repository_id))
+    error_message = "github_repository_id must be the numeric repository id."
+  }
+}
+
 variable "github_branch" {
   description = "The only branch whose workflows may impersonate the deployer service account."
   type        = string
@@ -131,16 +141,17 @@ variable "sweep_max_age_minutes" {
 }
 
 variable "tick_deadline_seconds" {
-  description = "INTERNAL_TICK_DEADLINE_SECONDS: longest one /internal/tick call keeps sending (must stay below the 900s Cloud Run timeout and the scheduler attempt deadline)."
+  description = "INTERNAL_TICK_DEADLINE_SECONDS: longest one /internal/tick call keeps sending (must stay below the 900s Cloud Run timeout and well below the 600s scheduler attempt deadline: after the deadline one more send can still finish, up to 90s, so 480 + 90 stays under 600)."
   type        = number
-  default     = 540
+  default     = 480
 }
 
 variable "trust_proxy_hops" {
   description = <<-EOT
     TRUST_PROXY for the backend: number of proxies that append to X-Forwarded-For in front of Express.
-    Browser -> mail-web (Cloud Run front end + Next rewrite) -> mail-backend (Cloud Run front end) is assumed to be 2.
-    Verify after first deploy (see docs/deploy.md): too low rate-limits all users as one IP, too high lets clients spoof their IP.
+    Browser -> mail-web (Cloud Run front end + Next rewrite) -> mail-backend (Cloud Run front end) is assumed to be 2, but 3 is
+    plausible. Verifying it is a MANDATORY first-deploy step (docs/deploy.md): too low puts every user (and an attacker) in
+    one rate-limit/lockout bucket, too high lets clients spoof their IP.
   EOT
   type        = number
   default     = 2

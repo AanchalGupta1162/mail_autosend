@@ -82,7 +82,23 @@ resource "google_monitoring_alert_policy" "backend_errors" {
   }
 }
 
-# (c) Cloud Scheduler could not reach the backend or got an error back.
+# (c) Cloud Scheduler job failed. Scheduler logs one ERROR per failed ATTEMPT, including attempts its own retry then fixes, so a
+# single error is not an incident. Every job retries (send-window once, sweeps three times), so a job that is really failing
+# logs at least two errors within minutes. The metric counts attempt errors per job and the policy fires on more than one in
+# 30 minutes. Limit: an alignment bucket boundary can split two errors into 1+1 and hide that occurrence; the backend ERROR
+# alert (b) and the send-attention alert (d) cover that case when the backend itself was reached.
+resource "google_logging_metric" "scheduler_attempt_errors" {
+  project = var.project_id
+  name    = "mail_scheduler_attempt_errors"
+  filter  = "resource.type=\"cloud_scheduler_job\" AND severity>=ERROR"
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+  }
+}
+
 resource "google_monitoring_alert_policy" "scheduler_failures" {
   project               = var.project_id
   display_name          = "mail-autosender: Cloud Scheduler job failed"
@@ -90,22 +106,33 @@ resource "google_monitoring_alert_policy" "scheduler_failures" {
   notification_channels = local.channels
 
   conditions {
-    display_name = "Scheduler attempt finished with an error"
-    condition_matched_log {
-      filter = "resource.type=\"cloud_scheduler_job\" AND severity>=ERROR"
+    display_name = "More than one failed attempt of one scheduler job in 30 minutes"
+    condition_threshold {
+      filter          = "metric.type=\"logging.googleapis.com/user/${google_logging_metric.scheduler_attempt_errors.name}\" AND resource.type=\"cloud_scheduler_job\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 1
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "1800s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.label.job_id"]
+      }
+
+      trigger {
+        count = 1
+      }
     }
   }
 
   alert_strategy {
-    notification_rate_limit {
-      period = "3600s"
-    }
     auto_close = "604800s"
   }
 
   documentation {
     mime_type = "text/markdown"
-    content   = "A Cloud Scheduler job failed after its retries. Check the job's logs (gcloud scheduler jobs describe) and the matching backend request in Cloud Run logs (401/403 usually means OIDC audience or invoker SA mismatch)."
+    content   = "A Cloud Scheduler job failed repeatedly (a single failed attempt that a retry fixes does not alert). Check the job's logs (gcloud scheduler jobs describe) and the matching backend request in Cloud Run logs (401/403 usually means OIDC audience or invoker SA mismatch)."
   }
 }
 
@@ -141,15 +168,16 @@ resource "google_monitoring_alert_policy" "send_attention" {
   }
 }
 
-# (e) No successful reply sweep for ~24 hours. Counts /internal/sweep completions that neither errored nor were skipped.
+# (e) No successful reply sweep for ~24 hours. Counts /internal/sweep completions the app itself rates healthy: the
+# `internal_sweep` log line carries ok (no fatal error, row errors within tolerance, at least one check completed when there
+# were candidates). Skipped sweeps and errors have no ok=true and are not counted.
 resource "google_logging_metric" "sweep_success" {
   project = var.project_id
   name    = "mail_sweep_success"
   filter = join(" AND ", [
     local.backend_logs,
     "jsonPayload.event=\"internal_sweep\"",
-    "NOT jsonPayload.error=true",
-    "NOT jsonPayload.skipped:*",
+    "jsonPayload.ok=true",
   ])
 
   metric_descriptor {
