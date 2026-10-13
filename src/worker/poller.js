@@ -41,3 +41,15 @@ export function createPoller({ run, intervalMs = 30_000, logger = defaultLogger 
     },
   };
 }
+
+// Wraps `task` so it runs at most once per `everyMs` (first call runs immediately). The clock is
+// only advanced after the task starts, so a failing task is retried after the interval, not hot.
+export function intervalGate(everyMs, task, now = Date.now) {
+  let last = null;
+  return async (...args) => {
+    const t = now();
+    if (last !== null && t - last < everyMs) return undefined;
+    last = t;
+    return task(...args);
+  };
+}

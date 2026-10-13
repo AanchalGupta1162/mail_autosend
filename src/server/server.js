@@ -5,8 +5,11 @@ import { createPool } from "../db/pool.js";
 import { migrate } from "../db/migrate.js";
 import { createApp } from "./app.js";
 import { createMailer } from "../mailer.js";
-import { createPoller } from "../worker/poller.js";
+import { createPoller, intervalGate } from "../worker/poller.js";
 import { runTick } from "../worker/tick.js";
+import { runSweep } from "../worker/sweep.js";
+
+const SWEEP_INTERVAL_MS = 10 * 60_000;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -28,13 +31,19 @@ const mailer = createMailer(config);
 const app = createApp({ pool, config, mailer, staticDir: path.join(root, "web", "dist") });
 const server = app.listen(config.port, () => console.log(`Listening on port ${config.port}`));
 
+// Reply sweep: at most every 10 minutes, real mode only (dry-run has no inbox to check).
+const sweepGate = intervalGate(SWEEP_INTERVAL_MS, ({ shouldStop }) => runSweep({ pool, config, shouldStop }));
+
 // The send worker runs in this process, never under test (tests call runTick directly).
 const poller =
   config.nodeEnv === "test"
     ? null
     : createPoller({
         intervalMs: config.pollIntervalSeconds * 1000,
-        run: ({ shouldStop, signal }) => runTick({ pool, mailer, config, shouldStop, signal }),
+        run: async ({ shouldStop, signal }) => {
+          await runTick({ pool, mailer, config, shouldStop, signal });
+          if (!config.dryRun && !shouldStop()) await sweepGate({ shouldStop });
+        },
       });
 poller?.start();
 console.log(`Send worker ${poller ? `polling every ${config.pollIntervalSeconds}s` : "disabled"} (DRY_RUN=${config.dryRun})`);

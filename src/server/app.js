@@ -9,6 +9,7 @@ import { requireAuth, requireCsrf } from "../auth/middleware.js";
 import { authRouter } from "../auth/routes.js";
 import { batchesRouter } from "./routes/batches.js";
 import { contactsRouter } from "./routes/contacts.js";
+import { dashboardRouter } from "./routes/dashboard.js";
 import { schedulingRouter } from "./routes/scheduling.js";
 import { errorHandler, notFound } from "./errors.js";
 
@@ -16,7 +17,7 @@ const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 // createApp({pool, config, mailer?, logger?, staticDir?}) -> express app.
 // The session table comes from migration 002 (resolved via the pool's search_path).
-export function createApp({ pool, config, mailer, logger = console, staticDir, loginRateLimit = {} } = {}) {
+export function createApp({ pool, config, mailer, checkReply, logger = console, staticDir, loginRateLimit = {} } = {}) {
   if (!pool) throw new Error("pool is required");
   if (typeof config?.sessionSecret !== "string" || config.sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters");
@@ -94,6 +95,7 @@ export function createApp({ pool, config, mailer, logger = console, staticDir, l
   app.use("/api/batches", batchesRouter({ pool, config }));
   app.use("/api/contacts", contactsRouter({ pool }));
   app.use("/api", schedulingRouter({ pool }));
+  app.use("/api", dashboardRouter({ pool, config, checkReply, logger }));
   app.use("/api", notFound);
 
   const dist = staticDir && existsSync(path.join(staticDir, "index.html")) ? staticDir : null;

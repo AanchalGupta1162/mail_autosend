@@ -8,7 +8,7 @@ export const TEST_PASSWORD = "correct-horse-battery";
 const silent = { error() {}, warn() {}, info() {} };
 
 // Real app on a random port, real Postgres in a throwaway schema, real HTTP.
-export async function startTestApp(envOverrides = {}, { defaultRateLimit = false } = {}) {
+export async function startTestApp(envOverrides = {}, { defaultRateLimit = false, appOptions = {} } = {}) {
   const db = await createTestDb();
   const config = loadServerConfig({
     DATABASE_URL: process.env.DATABASE_URL,
@@ -20,6 +20,7 @@ export async function startTestApp(envOverrides = {}, { defaultRateLimit = false
     pool: db.pool,
     config,
     logger: silent,
+    ...appOptions,
     ...(defaultRateLimit ? {} : { loginRateLimit: { limit: 10_000 } }),
   });
   const server = await new Promise((resolve) => {
