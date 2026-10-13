@@ -1,5 +1,6 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import nodemailer from "nodemailer";
 import { createTestDb } from "../helpers/db.js";
 import { seedBatch, addMessage } from "../helpers/seed.js";
@@ -105,11 +106,15 @@ test("only due scheduled messages are sent; injected clock decides", async () =>
   assert.equal((await msgRow(future.msg.id)).state, "sent");
 });
 
-test("resume attachment is included for initials when configured", async () => {
+test("the legacy resume file is read before sending and attached as bytes with its own name", async () => {
   await dueInitial();
   const m = fakeMailer();
-  await tick({ mailer: m, config: { resumePath: "/tmp/resume.pdf" } });
-  assert.deepEqual(m.calls[0].attachments, [{ path: "/tmp/resume.pdf" }]);
+  const file = path.resolve("test/fixtures/resume.pdf");
+  await tick({ mailer: m, config: { resumePath: file } });
+  assert.equal(m.calls[0].attachments.length, 1);
+  assert.equal(m.calls[0].attachments[0].filename, "resume.pdf");
+  assert.equal(m.calls[0].attachments[0].contentType, "application/pdf");
+  assert.ok(Buffer.isBuffer(m.calls[0].attachments[0].content) && m.calls[0].attachments[0].content.length > 0);
 });
 
 test("DRY_RUN with a real jsonTransport builds a real Message-ID, delivers nothing and sets dry_run", async () => {
@@ -491,6 +496,7 @@ test("F1: a rejected app password (real EAUTH from a scripted SMTP server) holds
 
     // First hold pushed the message ~15 minutes out.
     const t0 = Date.now();
+    await pool.query("delete from settings where key='send_hold'"); // (R2 would otherwise pause this tick: the loop above just held)
     await pool.query("update messages set state='scheduled', scheduled_for=$2 where id=$1", [a.msg.id, new Date(t0 - 1000)]);
     await tick({ mailer: bad, now: () => new Date(t0) });
     const gap = (await msgRow(a.msg.id)).scheduled_for.getTime() - t0;
@@ -500,7 +506,7 @@ test("F1: a rejected app password (real EAUTH from a scripted SMTP server) holds
     await pool.query("update messages set scheduled_for = now() - interval '1 minute' where state='scheduled'");
     const good = smtp.transport();
     smtp.setMode("ok");
-    const s2 = await tick({ mailer: good });
+    const s2 = await tick({ mailer: good, now: () => new Date(t0 + 16 * 60_000) }); // R2: past the 15-minute hold window
     assert.ok(s2.sent >= 1);
     assert.equal((await pool.query("select count(*)::int n from settings where key='send_hold'")).rows[0].n, 0);
   } finally {
@@ -517,7 +523,7 @@ test("F1: a hold cannot be mistaken for a send and does not use up the daily cap
     assert.equal(s.sent, 0);
     smtp.setMode("ok");
     await pool.query("update messages set scheduled_for = now() - interval '1 minute'");
-    const s2 = await tick({ mailer: smtp.transport(), config: { dailySendCap: 1 } });
+    const s2 = await tick({ mailer: smtp.transport(), config: { dailySendCap: 1 }, now: () => new Date(Date.now() + 16 * 60_000) }); // past the hold window
     assert.equal(s2.sent, 1, "cap of 1 still available after a hold");
   } finally {
     await smtp.close();

@@ -4,7 +4,7 @@
 //             timeout) or the server refused us at EHLO/STARTTLS/AUTH/MAIL FROM/RCPT TO with a 4xx/5xx.
 //   permanent as above, but a 5xx on MAIL FROM / RCPT TO: retrying is pointless.
 //   hold      the queue itself cannot send and retrying will not help: rejected credentials (EAUTH) or a
-//             missing/unreadable local file (signature, attachment). Nothing was sent; the caller puts
+//             missing/unreadable local file (signature, legacy resume) or a library resume that could not be fetched (ERESUME). Nothing was sent; the caller puts
 //             the message back without consuming an attempt and surfaces the problem.
 //   ambiguous anything else. NEVER retried: the row goes to needs_review.
 //
@@ -45,7 +45,7 @@ export function classifySendError(err) {
 
   if (responseCode >= 200 && responseCode < 400) return ambiguous;
 
-  if ((code === "EAUTH" || code === "ENOENT" || code === "EACCES") && command !== "DATA") return { outcome: "hold", description };
+  if ((code === "EAUTH" || code === "ENOENT" || code === "EACCES" || code === "ERESUME") && command !== "DATA") return { outcome: "hold", description };
 
   if (SMTP_STEP_COMMANDS.has(command)) {
     // A server rejection (4xx/5xx) at a pre-DATA step, or a local auth/envelope error without a response.

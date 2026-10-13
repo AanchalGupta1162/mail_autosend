@@ -4,7 +4,8 @@ import { followupDueAt } from "../domain/schedule.js";
 import { getTemplate } from "../domain/template.js";
 import { classifySendError } from "./classify.js";
 import { followupSendsAllowed } from "./sweep.js";
-import { buildMail, loadSignature, newMessageId } from "./send.js";
+import { buildMail, createResumeCache, loadAttachments, loadSignature, newMessageId } from "./send.js";
+import { createResumeStorage } from "../storage/resumes.js";
 
 export const STALE_SENDING_MS = 10 * 60_000;
 export const MAX_ATTEMPTS = 3;
@@ -102,7 +103,7 @@ function withTimeout(promise, ms) {
 // row for the whole SMTP call. markReplied/optOut/followup-toggle take FOR UPDATE on that row, so
 // they wait until the send finishes instead of racing it: re-check + send are effectively atomic
 // with respect to every user action on this contact.
-async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, claimed, clock) {
+async function processMessage({ pool, mailer, config, sendTimeoutMs, resumeFetchTimeoutMs, logger, storage, cache }, claimed, clock) {
   const client = await pool.connect();
   let begun = false;
   let outcome = "lost";
@@ -161,7 +162,17 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
     } catch (err) {
       failure = err; // classified as a pre-send (retryable) failure; nothing is handed to SMTP
     }
-    const mail = failure ? null : buildMail({ config, signatureHtml, contact, message, initialMessageId, template });
+    let attachments = [];
+    if (!failure) {
+      try {
+        // Pre-send, like the signature: the snapshotted resume (or the legacy file) is read here so any
+        // failure is a hold and nothing is handed to SMTP without it.
+        attachments = await loadAttachments({ config, message, db: client, storage: storage(), cache, timeoutMs: resumeFetchTimeoutMs });
+      } catch (err) {
+        failure = err;
+      }
+    }
+    const mail = failure ? null : buildMail({ config, signatureHtml, contact, message, initialMessageId, template, attachments });
 
     try {
       if (failure) throw failure;
@@ -179,20 +190,26 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
         // Follow-up created in this same transaction, guarded by the live contact row: only when the
         // checkbox is still ticked and the contact is still in a sendable state.
         await client.query(
-          `INSERT INTO messages(contact_id, kind, state, scheduled_for)
-           SELECT c.id, 'followup', 'scheduled', $2 FROM contacts c
+          `INSERT INTO messages(contact_id, kind, state, scheduled_for, resume_id, resume_generation)
+           SELECT c.id, 'followup', 'scheduled', $2, $3, $4 FROM contacts c
             WHERE c.id = $1 AND c.followup_requested AND c.status = 'sent'
               AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.email = lower(c.email))
            ON CONFLICT (contact_id, kind) WHERE state <> 'cancelled' DO NOTHING`,
-          [contact.id, followupDueAt(sentAt, contact.followup_delay_days)],
+          [contact.id, followupDueAt(sentAt, contact.followup_delay_days), message.resume_id, message.resume_generation],
         );
       }
       await client.query("INSERT INTO events(contact_id, type, meta) VALUES ($1, 'sent', $2)", [
         contact.id,
         JSON.stringify({ messageId: message.id, kind: message.kind, dryRun: config.dryRun }),
       ]);
-      // A real send proves credentials and files work again.
-      if (!config.dryRun) await client.query("DELETE FROM settings WHERE key = 'send_hold'");
+      // A real send proves credentials and files work again. A resume-scoped hold concerns one resume
+      // (other mail is unaffected), so only a successful send of that very message clears it.
+      if (!config.dryRun) {
+        await client.query(
+          "DELETE FROM settings WHERE key = 'send_hold' AND (value->>'scope' IS DISTINCT FROM 'resume' OR value->>'messageId' = $1)",
+          [message.id],
+        );
+      }
       await client.query("COMMIT");
       return "sent";
     }
@@ -213,7 +230,15 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
         "UPDATE messages SET state = 'scheduled', scheduled_for = $2, attempts = GREATEST(attempts - 1, 0), claimed_at = NULL, error = $3 WHERE id = $1",
         [message.id, new Date(clock().getTime() + HOLD_MINUTES * 60_000), note],
       );
-      const holdInfo = { at: clock().toISOString(), code: String(failure?.code ?? "ERROR"), message: note };
+      // A library resume that cannot be fetched concerns that resume only: other mail keeps flowing.
+      // Everything else (credentials, signature, legacy file) is systemic and pauses the queue.
+      const resumeScope = failure?.code === "ERESUME";
+      const holdInfo = {
+        at: clock().toISOString(),
+        code: String(failure?.code ?? "ERROR"),
+        message: note,
+        ...(resumeScope ? { scope: "resume", messageId: message.id } : {}),
+      };
       await client.query(
         "INSERT INTO settings(key, value) VALUES ('send_hold', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         [JSON.stringify(holdInfo)],
@@ -222,7 +247,7 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
         contact.id,
         JSON.stringify({ messageId: message.id, kind: message.kind, code: holdInfo.code }),
       ]);
-      outcome = "held";
+      outcome = resumeScope ? "heldResume" : "held";
     } else if (verdict.outcome === "retry" && message.attempts < MAX_ATTEMPTS) {
       const minutes = RETRY_BACKOFF_MINUTES[Math.min(message.attempts, RETRY_BACKOFF_MINUTES.length) - 1];
       await client.query(
@@ -284,14 +309,24 @@ export async function runTick({
   random = Math.random,
   logger = console,
   sendTimeoutMs = 90_000,
+  resumeFetchTimeoutMs = 30_000,
   shouldStop = () => false, // set by the poller on shutdown
   signal, // AbortSignal that wakes the jitter sleep on shutdown
   onClaimed, // test seam: called after a claim commits, before the message is processed
+  resumeStorage, // resume object storage (default: built from config on first use)
 }) {
   const clock = typeof now === "function" ? now : () => now;
   const summary = { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, held: 0, retried: 0, failed: 0, needsReview: 0 };
   summary.staleRecovered = await recoverStale(pool, clock());
-  const ctx = { pool, mailer, config, sendTimeoutMs, logger };
+  // R2: a systemic hold younger than HOLD_MINUTES pauses real sending entirely, so a rejected app password
+  // is retried once per window instead of on every poll. Dry-run is never paused; a resume-scoped hold never pauses.
+  if (!config.dryRun) {
+    const hold = (await pool.query("SELECT value FROM settings WHERE key = 'send_hold'")).rows[0]?.value;
+    const heldAt = hold && hold.scope !== "resume" ? Date.parse(hold.at) : NaN;
+    if (!Number.isNaN(heldAt) && clock().getTime() - heldAt < HOLD_MINUTES * 60_000) return { ...summary, paused: true };
+  }
+  let storage;
+  const ctx = { pool, mailer, config, sendTimeoutMs, resumeFetchTimeoutMs, logger, cache: createResumeCache(), storage: () => (storage ??= resumeStorage ?? createResumeStorage(config)) };
   let attemptedBefore = false;
   // One message per iteration: only the row in flight is ever in `sending`; cap and the
   // per-tick limit are re-evaluated before every claim.
@@ -317,6 +352,7 @@ export async function runTick({
     }
     const result = await processMessage(ctx, row, clock);
     if (result in summary) summary[result] += 1;
+    else if (result === "heldResume") summary.held += 1;
     if (result === "held") break; // systemic (credentials/config): do not hammer SMTP with every due message
     attemptedBefore = result === "sent" || result === "retried" || result === "failed" || result === "needsReview";
   }
