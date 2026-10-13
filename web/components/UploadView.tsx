@@ -5,7 +5,15 @@ import { api, ApiError } from "@/lib/api";
 import { checkCsvFile, MAX_ROWS } from "@/lib/upload";
 import { plural } from "@/lib/format";
 import type { Resume, RowIssue, UploadResult } from "@/lib/types";
+import { FileSpreadsheet, Loader2, RotateCcw, Upload as UploadIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { BatchScheduler } from "./BatchScheduler";
+import { Notice } from "./Notice";
+import { PageHeader } from "./PageHeader";
+import { Stepper } from "./Stepper";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export function UploadView() {
   const input = useRef<HTMLInputElement>(null);
@@ -64,75 +72,85 @@ export function UploadView() {
 
   if (result) {
     return (
-      <div className="page">
-        <header className="page-head">
-          <div>
-            <p className="eyebrow">Batch uploaded</p>
-            <h1>{result.batch.name}</h1>
-            <p className="page-sub">
+      <div>
+        <PageHeader
+          eyebrow="Batch uploaded"
+          title={result.batch.name}
+          description={
+            <>
               {plural(result.contacts.length, "contact")} imported
               {result.errors.length > 0 && `, ${plural(result.errors.length, "row")} rejected`}. Nothing is scheduled until you confirm below.
-            </p>
-          </div>
-          <button type="button" className="btn btn-quiet" onClick={reset}>
-            Upload another file
-          </button>
-        </header>
+            </>
+          }
+          actions={
+            <Button variant="outline" size="sm" onClick={reset}>
+              <RotateCcw />
+              Upload another file
+            </Button>
+          }
+        />
         <BatchScheduler upload={result} resumes={resumes} />
       </div>
     );
   }
 
   return (
-    <div className="page page-narrow">
-      <header className="page-head">
-        <div>
-          <h1>Upload a CSV</h1>
-          <p className="page-sub">
-            Columns: Company, Role, Person, Email, Subject, Mail Text, and optionally Follow-up Text. Up to {MAX_ROWS} rows, 1 MB.
-          </p>
-        </div>
-      </header>
+    <div className="mx-auto max-w-2xl">
+      <PageHeader
+        title="Upload a CSV"
+        description={`Columns: Company, Role, Person, Email, Subject, Mail Text, and optionally Follow-up Text. Up to ${MAX_ROWS} rows, 1 MB.`}
+      />
+      <Stepper current={1} />
 
-      <label
-        className={`dropzone${dragging ? " is-dragging" : ""}${file ? " has-file" : ""}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-      >
-        <input ref={input} className="sr-only" type="file" accept=".csv,text/csv" onChange={(e) => pick(e.target.files?.[0])} />
-        <span className="dropzone-title">{file ? file.name : "Drop a CSV here"}</span>
-        <span className="dropzone-sub">{file ? `${(file.size / 1024).toFixed(1)} KB · choose again to replace` : "or click to choose a file"}</span>
-      </label>
-
-      <div className="field">
-        <label htmlFor="batch-name">Batch name (optional)</label>
-        <input id="batch-name" maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to the file name" />
-      </div>
-
-      {error && (
-        <div className="callout callout-danger" role="alert">
-          <p className="callout-title">{error}</p>
-          {rowErrors.length > 0 && (
-            <ul className="issue-list">
-              {rowErrors.map((e) => (
-                <li key={e.row}>
-                  <span className="mono issue-row">Row {e.row}</span>
-                  <span>{e.message}</span>
-                </li>
-              ))}
-            </ul>
+      <div className="space-y-5 rounded-lg border bg-card p-5">
+        <label
+          className={cn(
+            "group flex cursor-pointer flex-col items-center gap-1.5 rounded-lg border border-dashed px-6 py-10 text-center transition-colors",
+            "hover:border-primary/60 hover:bg-accent/50 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/25",
+            dragging && "border-primary bg-accent",
+            file && "border-solid bg-muted/50",
           )}
-        </div>
-      )}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+        >
+          <input ref={input} className="sr-only" type="file" accept=".csv,text/csv" onChange={(e) => pick(e.target.files?.[0])} />
+          <span className="mb-1 grid size-9 place-items-center rounded-lg border bg-background text-muted-foreground group-hover:text-foreground">
+            {file ? <FileSpreadsheet aria-hidden="true" className="size-4.5" /> : <UploadIcon aria-hidden="true" className="size-4.5" />}
+          </span>
+          <span className="text-sm font-medium">{file ? file.name : "Drop a CSV here"}</span>
+          <span className="text-[13px] text-muted-foreground">{file ? `${(file.size / 1024).toFixed(1)} KB · choose again to replace` : "or click to choose a file"}</span>
+        </label>
 
-      <div className="actions">
-        <button type="button" className="btn btn-primary" disabled={!file || busy} onClick={onUpload}>
-          {busy ? "Uploading…" : "Upload and preview"}
-        </button>
+        <div className="space-y-1.5">
+          <Label htmlFor="batch-name">Batch name (optional)</Label>
+          <Input id="batch-name" maxLength={120} value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to the file name" />
+        </div>
+
+        {error && (
+          <Notice tone="danger" role="alert" title={error}>
+            {rowErrors.length > 0 && (
+              <ul className="max-h-60 space-y-1 overflow-y-auto pt-1">
+                {rowErrors.map((e) => (
+                  <li key={e.row} className="flex gap-3">
+                    <span className="w-14 shrink-0 font-mono text-xs text-muted-foreground">Row {e.row}</span>
+                    <span>{e.message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Notice>
+        )}
+
+        <div className="flex justify-end">
+          <Button disabled={!file || busy} onClick={onUpload}>
+            {busy && <Loader2 className="animate-spin" />}
+            {busy ? "Uploading…" : "Upload and preview"}
+          </Button>
+        </div>
       </div>
     </div>
   );

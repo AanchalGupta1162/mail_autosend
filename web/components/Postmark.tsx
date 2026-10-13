@@ -1,13 +1,14 @@
 import { formatDay, formatTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
-/** A send time, set like a postmark: day on top, time below, in the data face. */
-export function Postmark({ at, label }: { at: string | Date; label?: string }) {
+/** A send time: day over time, in tabular figures. */
+export function Postmark({ at, label, className }: { at: string | Date; label?: string; className?: string }) {
   const d = at instanceof Date ? at : new Date(at);
-  if (Number.isNaN(d.getTime())) return <span className="muted">—</span>;
+  if (Number.isNaN(d.getTime())) return <span className="text-muted-foreground">—</span>;
   return (
-    <time className="postmark" dateTime={d.toISOString()} title={label}>
-      <span className="postmark-day">{formatDay(d)}</span>
-      <span className="postmark-time">{formatTime(d)}</span>
+    <time className={cn("inline-flex flex-col leading-tight tabular-nums", className)} dateTime={d.toISOString()} title={label}>
+      <span className="text-[13px] font-medium">{formatDay(d)}</span>
+      <span className="font-mono text-xs text-muted-foreground">{formatTime(d)}</span>
     </time>
   );
 }

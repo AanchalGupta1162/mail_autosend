@@ -1,10 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { FileText, Loader2, Upload } from "lucide-react";
+import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api";
 import { plural } from "@/lib/format";
 import { checkResumeFile, checkResumeName, defaultNameFor, formatBytes, looksLikePdf } from "@/lib/resumes";
 import type { Resume } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { Notice } from "./Notice";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 function deleteMessage(err: unknown): string {
   if (err instanceof ApiError && err.status === 409) {
@@ -23,6 +31,7 @@ function UploadForm({ onUploaded }: { onUploaded: () => void }) {
   const [suggested, setSuggested] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   function pick(f: File | undefined) {
     setFile(f ?? null);
@@ -32,6 +41,23 @@ function UploadForm({ onUploaded }: { onUploaded: () => void }) {
       setSuggested(s);
       setName(s);
     }
+  }
+
+  function onDrop(e: DragEvent<HTMLLabelElement>) {
+    e.preventDefault();
+    setDragging(false);
+    const f = e.dataTransfer.files?.[0];
+    if (!f) return;
+    if (input.current) {
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(f);
+        input.current.files = dt.files;
+      } catch {
+        // Older browsers: the file is still tracked in state below.
+      }
+    }
+    pick(f);
   }
 
   async function onSubmit(e: FormEvent) {
@@ -47,6 +73,7 @@ function UploadForm({ onUploaded }: { onUploaded: () => void }) {
       setName("");
       setSuggested("");
       if (input.current) input.current.value = "";
+      toast.success("Resume uploaded");
       onUploaded();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Upload failed. Try again.");
@@ -56,25 +83,42 @@ function UploadForm({ onUploaded }: { onUploaded: () => void }) {
   }
 
   return (
-    <form className="settings-form" onSubmit={onSubmit} noValidate>
-      <div className="field">
-        <label htmlFor="resume-file">Resume file (PDF, up to 5 MB)</label>
-        <input id="resume-file" ref={input} type="file" accept="application/pdf,.pdf" onChange={(e) => pick(e.target.files?.[0])} />
-      </div>
-      <div className="field">
-        <label htmlFor="resume-name">Display name</label>
-        <input id="resume-name" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Backend roles" />
-        <p className="hint">Shown when you choose which resume to attach.</p>
+    <form className="space-y-4" onSubmit={onSubmit} noValidate>
+      <label
+        htmlFor="resume-file"
+        className={cn(
+          "group flex cursor-pointer flex-col items-center gap-1 rounded-lg border border-dashed px-4 py-6 text-center transition-colors",
+          "hover:border-primary/60 hover:bg-accent/50 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/25",
+          dragging && "border-primary bg-accent",
+          file && "border-solid bg-muted/50",
+        )}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
+      >
+        <input id="resume-file" ref={input} className="sr-only" type="file" accept="application/pdf,.pdf" onChange={(e) => pick(e.target.files?.[0])} />
+        {file ? <FileText aria-hidden="true" className="size-5 text-accent-text" /> : <Upload aria-hidden="true" className="size-5 text-muted-foreground group-hover:text-foreground" />}
+        <span className="text-[13px] font-medium">Resume file (PDF, up to 5 MB)</span>
+        <span className="text-xs text-muted-foreground">{file ? `${file.name} · ${formatBytes(file.size)}` : "Drop a PDF here or click to choose"}</span>
+      </label>
+      <div className="space-y-1.5">
+        <Label htmlFor="resume-name">Display name</Label>
+        <Input id="resume-name" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Backend roles" />
+        <p className="text-xs text-muted-foreground">Shown when you choose which resume to attach.</p>
       </div>
       {error && (
-        <p className="callout callout-danger" role="alert">
+        <Notice tone="danger" role="alert">
           {error}
-        </p>
+        </Notice>
       )}
-      <div className="actions">
-        <button type="submit" className="btn btn-primary" disabled={busy}>
+      <div className="flex justify-end">
+        <Button type="submit" disabled={busy}>
+          {busy && <Loader2 className="animate-spin" />}
           {busy ? "Uploading…" : "Upload resume"}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -112,52 +156,54 @@ function ResumeItem({ resume, onChanged, onError }: { resume: Resume; onChanged:
   }
 
   return (
-    <li className="resume-item">
-      <div className="resume-main">
-        <span className="cell-primary">{resume.displayName}</span>
-        {resume.isDefault && <span className="tag tag-success">Default</span>}
-        <span className="cell-secondary mono">{resume.fileName}</span>
-        <span className="cell-secondary">{formatBytes(resume.sizeBytes)}</span>
-        {inUse.map((t) => (
-          <span key={t} className="cell-secondary">
-            {t}
-          </span>
-        ))}
+    <li className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <span aria-hidden="true" className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground">
+          <FileText className="size-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="truncate text-[13px] font-medium">{resume.displayName}</span>
+            {resume.isDefault && <span className="rounded-md bg-st-green-bg px-1.5 py-0.5 text-[11px] font-medium text-st-green">Default</span>}
+          </div>
+          <div className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+            <span className="font-mono">{resume.fileName}</span>
+            <span aria-hidden="true">·</span>
+            <span>{formatBytes(resume.sizeBytes)}</span>
+            {inUse.map((t) => (
+              <span key={t} className="before:mr-2 before:content-['·']">
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
       {mode === "rename" ? (
-        <form className="inline-form" onSubmit={saveName} noValidate>
+        <form className="flex w-full flex-wrap items-start gap-2 sm:w-auto" onSubmit={saveName} noValidate>
           <label className="sr-only" htmlFor={`rn-${resume.id}`}>
             New name for {resume.displayName}
           </label>
-          <input id={`rn-${resume.id}`} maxLength={80} value={name} onChange={(e) => setName(e.target.value)} aria-invalid={nameError ? true : undefined} />
-          <button type="submit" className="btn btn-primary btn-small" disabled={busy}>
+          <div className="flex-1 sm:w-52">
+            <Input id={`rn-${resume.id}`} maxLength={80} value={name} onChange={(e) => setName(e.target.value)} aria-invalid={nameError ? true : undefined} />
+            {nameError && <p className="mt-1 text-xs text-destructive">{nameError}</p>}
+          </div>
+          <Button type="submit" size="sm" disabled={busy}>
             Save name
-          </button>
-          <button type="button" className="btn btn-quiet btn-small" onClick={() => setMode("view")}>
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => setMode("view")}>
             Keep
-          </button>
-          {nameError && <p className="field-error">{nameError}</p>}
+          </Button>
         </form>
-      ) : mode === "delete" ? (
-        <div className="inline-form">
-          <span className="confirm-text">Delete this resume? Emails already sent are not affected.</span>
-          <button type="button" className="btn btn-danger btn-small" disabled={busy} onClick={() => run(() => api.deleteResume(resume.id))}>
-            Delete resume
-          </button>
-          <button type="button" className="btn btn-quiet btn-small" onClick={() => setMode("view")}>
-            Keep
-          </button>
-        </div>
       ) : (
-        <div className="action-row">
+        <div className="flex items-center gap-1">
           {!resume.isDefault && (
-            <button type="button" className="btn-link" disabled={busy} aria-label={`Make ${resume.displayName} the default`} onClick={() => run(() => api.updateResume(resume.id, { isDefault: true }))}>
+            <Button variant="ghost" size="sm" disabled={busy} aria-label={`Make ${resume.displayName} the default`} onClick={() => run(() => api.updateResume(resume.id, { isDefault: true }))}>
               Make default
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className="btn-link"
+          <Button
+            variant="ghost"
+            size="sm"
             aria-label={`Rename ${resume.displayName}`}
             onClick={() => {
               setName(resume.displayName);
@@ -166,12 +212,33 @@ function ResumeItem({ resume, onChanged, onError }: { resume: Resume; onChanged:
             }}
           >
             Rename
-          </button>
-          <button type="button" className="btn-link btn-link-danger" aria-label={`Delete ${resume.displayName}`} onClick={() => setMode("delete")}>
+          </Button>
+          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" aria-label={`Delete ${resume.displayName}`} onClick={() => setMode("delete")}>
             Delete
-          </button>
+          </Button>
         </div>
       )}
+      <AlertDialog open={mode === "delete"} onOpenChange={(o) => !o && setMode("view")}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {resume.displayName}?</AlertDialogTitle>
+            <AlertDialogDescription>Delete this resume? Emails already sent are not affected.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={busy}
+              onClick={(e) => {
+                e.preventDefault();
+                void run(() => api.deleteResume(resume.id));
+              }}
+            >
+              Delete resume
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </li>
   );
 }
@@ -194,18 +261,18 @@ export function ResumesPanel() {
   }, [tick]);
 
   return (
-    <div className="resumes">
+    <div className="space-y-5">
       {error && (
-        <p className="callout callout-danger" role="alert">
+        <Notice tone="danger" role="alert">
           {error}
-        </p>
+        </Notice>
       )}
       {resumes === null ? (
-        !error && <p className="muted">Loading…</p>
+        !error && <p className="text-[13px] text-muted-foreground">Loading…</p>
       ) : resumes.length === 0 ? (
-        <p className="muted">No resumes yet. Upload a PDF below; the default one is attached to every email.</p>
+        <p className="rounded-lg border border-dashed px-4 py-5 text-center text-[13px] text-muted-foreground">No resumes yet. Upload a PDF below; the default one is attached to every email.</p>
       ) : (
-        <ul className="resume-list">
+        <ul className="divide-y rounded-lg border">
           {resumes.map((r) => (
             <ResumeItem key={r.id} resume={r} onChanged={reload} onError={setError} />
           ))}

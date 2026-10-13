@@ -3,6 +3,8 @@
 import { useId, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { refusalText } from "@/lib/refusals";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import type { Contact, FollowupResult } from "@/lib/types";
 
 const MIN = 1;
@@ -73,40 +75,39 @@ export function FollowupToggle({ contact, onChange, disabled }: Props) {
   }
 
   return (
-    <div className="followup">
-      <label className="check">
-        <input
-          type="checkbox"
+    <div className="space-y-1">
+      <div className="flex items-center gap-2.5">
+        <Switch
           checked={enabled}
           disabled={disabled || busy}
-          onChange={onToggle}
+          onCheckedChange={onToggle}
           aria-label={`Follow up with ${contact.email}`}
           aria-describedby={error ? `${id}-err` : undefined}
         />
-        <span aria-hidden="true">Follow up</span>
-      </label>
-      <label className="followup-delay">
-        <span className="sr-only">Days after the first email for {contact.email}</span>
-        <input
-          type="number"
-          inputMode="numeric"
-          min={MIN}
-          max={MAX}
-          value={delay}
-          disabled={disabled || busy}
-          onChange={(e) => setDelay(e.target.value)}
-          onBlur={onDelayCommit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              onDelayCommit();
-            }
-          }}
-        />
-        <span aria-hidden="true">days after</span>
-      </label>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="sr-only">Days after the first email for {contact.email}</span>
+          <Input
+            type="number"
+            inputMode="numeric"
+            min={MIN}
+            max={MAX}
+            value={delay}
+            disabled={disabled || busy}
+            onChange={(e) => setDelay(e.target.value)}
+            onBlur={onDelayCommit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onDelayCommit();
+              }
+            }}
+            className="h-7 w-14 px-2 text-center text-[13px]"
+          />
+          <span aria-hidden="true">days after</span>
+        </label>
+      </div>
       {error && (
-        <p className="field-error" id={`${id}-err`}>
+        <p className="text-xs text-destructive" id={`${id}-err`}>
           {error}
         </p>
       )}

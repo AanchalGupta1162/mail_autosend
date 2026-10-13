@@ -15,7 +15,7 @@ describe("FollowupToggle", () => {
     const seen = stubFetch(() => json({ contact: { ...contact, followupRequested: true }, followup: null }));
     const onChange = vi.fn();
     render(<FollowupToggle contact={contact} onChange={onChange} />);
-    await userEvent.click(screen.getByRole("checkbox", { name: /follow up with jo@acme.com/i }));
+    await userEvent.click(screen.getByRole("switch", { name: /follow up with jo@acme.com/i }));
     await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ url: "/api/contacts/c-1/followup", method: "PUT" });
@@ -27,7 +27,7 @@ describe("FollowupToggle", () => {
     let release!: (r: Response) => void;
     stubFetch(() => new Promise<Response>((r) => (release = r)));
     render(<FollowupToggle contact={contact} onChange={vi.fn()} />);
-    const box = screen.getByRole("checkbox");
+    const box = screen.getByRole("switch");
     await userEvent.click(box);
     expect(box).toBeChecked();
     release(json({ contact: { ...contact, followupRequested: true }, followup: null }));
@@ -38,7 +38,7 @@ describe("FollowupToggle", () => {
   it("unticking sends enabled:false", async () => {
     const seen = stubFetch(() => json({ contact: { ...contact, followupRequested: false }, followup: null }));
     render(<FollowupToggle contact={{ ...contact, followupRequested: true }} onChange={vi.fn()} />);
-    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("switch"));
     await vi.waitFor(() => expect(seen).toHaveLength(1));
     expect(JSON.parse(String(seen[0]!.body))).toEqual({ enabled: false, delayDays: 7 });
   });
@@ -68,7 +68,7 @@ describe("FollowupToggle", () => {
   it("shows why the server refused and leaves the box unticked", async () => {
     stubFetch(() => json({ error: "Some contacts cannot be scheduled", refused: [{ contactId: "c-1", email: "jo@acme.com", reason: "opted_out" }] }, 409));
     render(<FollowupToggle contact={contact} onChange={vi.fn()} />);
-    const box = screen.getByRole("checkbox");
+    const box = screen.getByRole("switch");
     await userEvent.click(box);
     expect(await screen.findByText(/opted out/i)).toBeInTheDocument();
     expect(box).not.toBeChecked();

@@ -42,20 +42,24 @@ describe("ContactsView", () => {
       return json({ contacts: [row], total: 1, page: 1, pageSize: 25 });
     });
     render(<ContactsView initialBatchId="b-1" />);
-    await userEvent.click(await screen.findByRole("button", { name: "Cancel send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for jo@acme.com" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Cancel send" }));
     await vi.waitFor(() => expect(seen.some((c) => c.method === "DELETE")).toBe(true));
     expect(seen.find((c) => c.url.startsWith("/api/contacts"))!.url).toBe("/api/contacts?batchId=b-1&page=1&pageSize=25");
     expect(seen.find((c) => c.method === "DELETE")!.url).toBe("/api/messages/m-1");
-    await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Cancel send" })).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Actions for jo@acme.com" }));
+    expect(screen.queryByRole("menuitem", { name: "Cancel send" })).toBeNull();
   });
 
   it("asks before opting out, then calls the opt-out endpoint", async () => {
     const seen = stubFetch((c) => (c.url === "/api/batches" ? json({ batches: [] }) : c.method === "POST" ? json({ contact: row }) : json({ contacts: [row], total: 1, page: 1, pageSize: 25 })));
     render(<ContactsView />);
-    await userEvent.click(await screen.findByRole("button", { name: "Opt out" }));
-    expect(screen.getByText(/stop all sends\?/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Actions for jo@acme.com" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Opt out" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText(/stop all sends\?/i)).toBeInTheDocument();
     expect(seen.some((c) => c.method === "POST")).toBe(false);
-    await userEvent.click(screen.getByRole("button", { name: "Opt out" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Opt out" }));
     await vi.waitFor(() => expect(seen.find((c) => c.method === "POST")?.url).toBe("/api/contacts/c-1/opt-out"));
   });
 
@@ -65,7 +69,8 @@ describe("ContactsView", () => {
       c.url === "/api/batches" ? json({ batches: [] }) : c.method === "POST" ? json({ message: {}, contact: {} }) : json({ contacts: [stuck], total: 1, page: 1, pageSize: 25 }),
     );
     render(<ContactsView />);
-    await userEvent.click(await screen.findByRole("button", { name: "Send again" }));
+    await userEvent.click(await screen.findByRole("button", { name: /delivery unknown\. resolve/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /send again/i }));
     expect(screen.getByText(/duplicate/i)).toBeInTheDocument();
     expect(seen.some((c) => c.method === "POST")).toBe(false);
     await userEvent.click(screen.getByRole("button", { name: "Send again" }));

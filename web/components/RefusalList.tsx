@@ -1,27 +1,27 @@
 import { refusalText } from "@/lib/refusals";
 import type { Refusal } from "@/lib/types";
 import { plural } from "@/lib/format";
+import { IssueList } from "./EmailLetter";
+import { Notice } from "./Notice";
+import { Button } from "@/components/ui/button";
 
 /** Bulk scheduling is all-or-nothing: shows every refused contact and why. */
 export function RefusalList({ refused, onDeselect }: { refused: Refusal[]; onDeselect?: () => void }) {
   return (
-    <div className="callout callout-danger" role="alert">
-      <p className="callout-title">
-        Nothing was scheduled. {plural(refused.length, "contact")} can&apos;t be sent:
-      </p>
-      <ul className="refusals">
+    <Notice tone="danger" role="alert" title={`Nothing was scheduled. ${plural(refused.length, "contact")} can't be sent:`}>
+      <IssueList>
         {refused.map((r) => (
           <li key={r.contactId}>
-            <span className="mono">{r.email ?? "Unknown contact"}</span>
-            <span className="refusal-reason">{refusalText(r.reason)}</span>
+            <span className="font-mono text-xs">{r.email ?? "Unknown contact"}</span>
+            <span>{refusalText(r.reason)}</span>
           </li>
         ))}
-      </ul>
+      </IssueList>
       {onDeselect && (
-        <button type="button" className="btn btn-quiet" onClick={onDeselect}>
+        <Button type="button" variant="outline" size="sm" className="mt-2" onClick={onDeselect}>
           Deselect these contacts
-        </button>
+        </Button>
       )}
-    </div>
+    </Notice>
   );
 }
