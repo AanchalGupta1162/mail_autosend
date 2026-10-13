@@ -4,16 +4,35 @@ name: Deploy
 # migrate job runs, each service gets a no-traffic revision that is smoke tested before taking traffic, and any failure
 # after traffic moved rolls back automatically.
 # Manual run with `sha`: redeploy (or roll back to) an already-built commit without rebuilding.
+#
+# Guards:
+#  * Docs-only pushes (docs/**, *.md) do not deploy.
+#  * No deploy while the send window is open (08:55-10:15 Asia/Kolkata) unless a manual run sets force=true: shifting traffic
+#    retires the old revision, and Cloud Run only gives it SIGTERM plus about 10 s, so a send in flight (up to 90 s) would be
+#    killed mid-SMTP and left for needs_review recovery (a possible duplicate or a manual-review item). The check runs at the
+#    start and again right before traffic moves (builds and environment approval can take a long time).
+#  * Every required secret must have a real version (version 1 is the throwaway placeholder).
+#
+# Concurrency: a run waiting for `production` environment approval occupies the group, so an urgent manual rollback queues
+# behind it. Reject (or cancel) the pending run first, or roll back from a terminal (docs/deploy.md section 3).
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
   workflow_dispatch:
     inputs:
       sha:
         description: "Full commit SHA whose images are already in Artifact Registry (rollback / redeploy). Empty = build and deploy this commit."
         required: false
         type: string
+      force:
+        description: "Deploy even while the send window (08:55-10:15 IST) is open. Emergency rollbacks only: an in-flight send can be killed."
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-production
@@ -44,8 +63,20 @@ jobs:
       PROJECT: ${{ vars.GCP_PROJECT }}
       REGION: ${{ vars.GCP_REGION }}
       INPUT_SHA: ${{ inputs.sha }}
+      INPUT_FORCE: ${{ inputs.force }}
       EVENT_SHA: ${{ github.sha }}
+      ALLOW_SECRET_VERSION_1: ${{ vars.ALLOW_SECRET_VERSION_1 }}
     steps:
+      - name: Refuse to deploy while the send window is open
+        run: |
+          set -euo pipefail
+          hhmm="$(TZ=Asia/Kolkata date +%H%M)"
+          if [ "$INPUT_FORCE" != "true" ] && [ "$((10#$hhmm))" -ge 855 ] && [ "$((10#$hhmm))" -le 1015 ]; then
+            echo "::error::It is $hhmm IST: the send window (09:00-10:00) is open or about to open. Deploying retires the old revision and can kill a send in flight. Re-run after 10:15 IST, or run manually with force=true for an emergency."
+            exit 1
+          fi
+
+
       - name: Resolve target commit
         id: target
         run: |
@@ -83,6 +114,21 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         with:
           project_id: ${{ vars.GCP_PROJECT }}
+
+      # Version 1 of each secret is the throwaway placeholder that Terraform seeds. Metadata only (versions list), never payloads.
+      - name: Preflight, required secrets have a real version
+        run: |
+          set -euo pipefail
+          bad=0
+          for s in mail-database-url mail-gmail-user mail-gmail-app-password mail-session-secret mail-admin-password mail-signature-html; do
+            latest="$(gcloud secrets versions list "$s" --filter='state=ENABLED' --format='value(name.basename())' | sort -n | tail -1)"
+            if [ -z "$latest" ]; then
+              echo "::error::secret $s has no enabled version"; bad=1
+            elif [ "$latest" = "1" ] && [ "$ALLOW_SECRET_VERSION_1" != "true" ]; then
+              echo "::error::secret $s is still at version 1 (the placeholder). Add a real version: printf '%s' \"\$VALUE\" | gcloud secrets versions add $s --data-file=-"; bad=1
+            fi
+          done
+          exit $bad
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${{ steps.target.outputs.registry }}" --quiet
@@ -122,8 +168,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.target.outputs.backend_image }}
-          provenance: mode=max
-          sbom: true
+          # No attestation manifests: one build is one Artifact Registry version (cleanup policy counts builds); CI scans with trivy.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
 
@@ -137,8 +184,9 @@ jobs:
           push: true
           tags: ${{ steps.target.outputs.web_image }}
           build-args: BACKEND_URL=${{ steps.state.outputs.backend_url }}
-          provenance: mode=max
-          sbom: true
+          # No attestation manifests: one build is one Artifact Registry version (cleanup policy counts builds); CI scans with trivy.
+          provenance: false
+          sbom: false
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
 
@@ -172,6 +220,12 @@ jobs:
       - name: Shift backend traffic to the new revision
         run: |
           set -euo pipefail
+          # Re-check the send window: the build and the environment approval may have taken hours.
+          hhmm="$(TZ=Asia/Kolkata date +%H%M)"
+          if [ "$INPUT_FORCE" != "true" ] && [ "$((10#$hhmm))" -ge 855 ] && [ "$((10#$hhmm))" -le 1015 ]; then
+            echo "::error::It is $hhmm IST: the send window is open. Traffic was NOT shifted; the candidate revision stays at 0%. Re-run after 10:15 IST (or force=true)."
+            exit 1
+          fi
           gcloud run services update-traffic mail-backend --region "$REGION" --to-latest --quiet
           echo "BACKEND_SHIFTED=true" >> "$GITHUB_ENV"
 
@@ -209,7 +263,7 @@ jobs:
           curl --fail --silent --show-error --retry 3 --retry-delay 5 --retry-all-errors --output /dev/null "$web/api/auth/csrf"
 
       - name: Roll back to the previous revisions
-        if: failure()
+        if: ${{ failure() && (env.BACKEND_SHIFTED == 'true' || env.WEB_SHIFTED == 'true') }}
         env:
           BACKEND_PREV: ${{ steps.state.outputs.backend_prev }}
           WEB_PREV: ${{ steps.state.outputs.web_prev }}

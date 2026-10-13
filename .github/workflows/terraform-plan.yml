@@ -1,7 +1,8 @@
 name: Terraform plan
 
-# Pull requests that touch infra/: show what would change. Read-only identity (github-planner), `-refresh=false`
-# (config vs state), no apply from CI. Apply is run by the owner from a workstation (see docs/deploy.md).
+# Pull requests that touch infra/: show what would change. Read-only identity (github-planner: objectViewer on the state bucket,
+# no data access), `-refresh=false -lock=false` (config vs state; no state write is needed, so a PR branch cannot tamper with
+# state), no apply from CI. Apply is run by the owner from a workstation (see docs/deploy.md).
 
 on:
   pull_request:
@@ -51,7 +52,7 @@ jobs:
       - run: terraform init -input=false
       - run: terraform validate
       - name: Plan
-        run: terraform plan -input=false -no-color -refresh=false -lock-timeout=60s -out=tfplan > plan.txt 2>&1 || { cat plan.txt; exit 1; }
+        run: terraform plan -input=false -no-color -refresh=false -lock=false > plan.txt 2>&1 || { cat plan.txt; exit 1; }
       - name: Comment plan on the pull request
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
