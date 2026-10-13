@@ -41,6 +41,8 @@ export function buildMail({ config, signatureHtml, contact, message, initialMess
       followUpText: rendered.text,
       messageId: initialMessageId,
     });
+    // Every mail carries the resume (the legacy CLI follow-up builder does not, so it is added here).
+    if (config.resumePath) options.attachments = [{ path: config.resumePath }];
     options.subject = /^re:/i.test(rendered.subject) ? rendered.subject : `Re: ${rendered.subject}`;
   }
   options.messageId = message.message_id;

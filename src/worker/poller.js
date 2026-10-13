@@ -42,3 +42,10 @@ export function createPoller({ run, intervalMs = 30_000, logger = defaultLogger 
   };
 }
 
+
+// Shutdown helper: stop the send loop and the sweep loop together. The send poller is asked to
+// stop first and the sweep is never awaited before it, so sending is not prolonged by a slow IMAP run.
+export async function stopWorkers(send, sweep) {
+  const stopping = [send?.stop(), sweep?.stop()];
+  await Promise.all(stopping);
+}

@@ -109,3 +109,10 @@ test("concurrent migrators serialize and leave no session-level advisory lock be
     await p3.end();
   }
 });
+
+test("migration 003 can be re-applied safely (IF NOT EXISTS)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const sql = await readFile(new URL("../../src/db/migrations/003_reply_check.sql", import.meta.url), "utf8");
+  await db.pool.query(sql);
+  await db.pool.query(sql);
+});

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadServerConfig, loadAdminSeedConfig } from "../../src/server/env.js";
 
+import path from "node:path";
+const files = { SIGNATURE_PATH: path.resolve("signature.html"), RESUME_PATH: path.resolve("attachments/Harshavardhan_Khamkar_Resume_.pdf") };
 const base = {
   DATABASE_URL: "postgres://u:p@localhost:5432/db",
   SESSION_SECRET: "x".repeat(32),
@@ -41,6 +43,7 @@ test("parses overrides and flags", () => {
     SEND_GAP_SECONDS_MAX: "2",
     GMAIL_USER: "a@gmail.com",
     GMAIL_APP_PASSWORD: "pw",
+    ...files,
   });
   assert.equal(c.port, 8080);
   assert.equal(c.dryRun, false);
@@ -72,14 +75,14 @@ test("DRY_RUN accepts only explicit boolean spellings", () => {
   for (const v of ["true", "TRUE", "1", "yes", "Yes"]) {
     assert.equal(loadServerConfig({ ...base, DRY_RUN: v }).dryRun, true, v);
   }
-  const creds = { GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw" };
+  const creds = { GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw", ...files };
   for (const v of ["false", "FALSE", "0", "no", "No"]) {
     assert.equal(loadServerConfig({ ...base, ...creds, DRY_RUN: v }).dryRun, false, v);
   }
 });
 
 test("DRY_RUN typo is rejected, naming the variable but not the value", () => {
-  const creds = { GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw" };
+  const creds = { GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw", ...files };
   for (const v of ["ture", "flase", "off", "2"]) {
     assert.throws(
       () => loadServerConfig({ ...base, ...creds, DRY_RUN: v }),
@@ -126,4 +129,14 @@ test("POLL_INTERVAL_SECONDS defaults to 30 and must be a positive integer", () =
 test("REPLY_SWEEP_ENABLED defaults to true and can be turned off", () => {
   assert.equal(loadServerConfig(base).replySweepEnabled, true);
   assert.equal(loadServerConfig({ ...base, REPLY_SWEEP_ENABLED: "false" }).replySweepEnabled, false);
+});
+
+test("real mode fails fast when SIGNATURE_PATH or RESUME_PATH is missing, unset or not a file; dry-run does not care", () => {
+  const real = { ...base, GMAIL_USER: "a@gmail.com", GMAIL_APP_PASSWORD: "pw", DRY_RUN: "false" };
+  assert.doesNotThrow(() => loadServerConfig({ ...real, ...files }));
+  assert.throws(() => loadServerConfig({ ...real, ...files, SIGNATURE_PATH: "" }), /SIGNATURE_PATH/);
+  assert.throws(() => loadServerConfig({ ...real, ...files, RESUME_PATH: undefined }), /RESUME_PATH/);
+  assert.throws(() => loadServerConfig({ ...real, ...files, SIGNATURE_PATH: "/nonexistent/sig.html" }), (e) => /SIGNATURE_PATH/.test(e.message) && !e.message.includes("/nonexistent"));
+  assert.throws(() => loadServerConfig({ ...real, ...files, RESUME_PATH: "/nonexistent/r.pdf" }), /RESUME_PATH/);
+  assert.doesNotThrow(() => loadServerConfig({ ...base, SIGNATURE_PATH: "/nonexistent/sig.html" }));
 });

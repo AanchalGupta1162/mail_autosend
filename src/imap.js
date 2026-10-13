@@ -52,10 +52,52 @@ export function classifyReply({ from, subject, headers }, { contactEmail, ownEma
   return { ok: true };
 }
 
+const imapError = (message, code, fatal) => Object.assign(new Error(message), { code, fatal });
+
+// imapflow's search()/fetchOne() do NOT throw on failure: they return false/undefined (and drop
+// the selected mailbox when the connection closes). Every such result is turned into a thrown
+// error here so it can never be mistaken for "no reply". fatal = the connection itself is gone.
+function assertUsable(client) {
+  if (!client.usable || !client.mailbox) throw imapError("IMAP connection lost", "NoConnection", true);
+}
+
+/** Wraps an already-connected imapflow client (INBOX selected). Exported for tests. */
+export function createCheckerFromClient(client, config, { onClose } = {}) {
+  return {
+    async check(messageId, opts = {}) {
+      if (!messageId) return false;
+      for (const { via, query } of buildReplySearches(messageId, opts)) {
+        assertUsable(client);
+        const uids = await client.search(query, { uid: true });
+        if (!Array.isArray(uids)) {
+          assertUsable(client);
+          throw imapError("IMAP search failed", "ESEARCH", false);
+        }
+        for (const uid of uids) {
+          const msg = await client.fetchOne(String(uid), { envelope: true, headers: HEADER_NAMES }, { uid: true });
+          if (!msg || !msg.envelope) {
+            assertUsable(client);
+            throw imapError("IMAP fetch failed", "EFETCH", false);
+          }
+          const verdict = classifyReply(
+            { from: msg.envelope.from?.[0]?.address, subject: msg.envelope.subject, headers: parseHeaders(msg.headers) },
+            { contactEmail: opts.fromEmail, ownEmail: config.gmailUser, exactFrom: via === "from-subject" },
+          );
+          if (verdict.ok) return { matched: true, via, uid };
+        }
+      }
+      return false;
+    },
+    async close() {
+      if (onClose) await onClose();
+    },
+  };
+}
+
 /**
- * Opens ONE IMAP connection for a whole sweep. check(messageId, opts) resolves to false or
- * { matched: true, via, uid }. Connection/auth failures are thrown with fatal = true; callers
- * must treat any throw as "unknown", never as "no reply". close() must always be called.
+ * Opens ONE IMAP connection for a whole sweep. check(messageId, opts) resolves to false (genuinely
+ * no reply) or { matched: true, via, uid }; any failure is thrown (fatal = connection gone) and
+ * must be treated as "unknown", never as "no reply". close() must always be called.
  */
 export async function createReplyChecker(config) {
   const client = new ImapFlow({
@@ -65,6 +107,7 @@ export async function createReplyChecker(config) {
     auth: { user: config.gmailUser, pass: config.gmailAppPassword },
     logger: false,
   });
+  client.on?.("error", () => {}); // surfaced through usable/mailbox checks; avoid unhandled 'error'
   let lock;
   try {
     await client.connect();
@@ -74,30 +117,15 @@ export async function createReplyChecker(config) {
     err.fatal = true;
     throw err;
   }
-  return {
-    async check(messageId, opts = {}) {
-      if (!messageId) return false;
-      for (const { via, query } of buildReplySearches(messageId, opts)) {
-        const uids = await client.search(query, { uid: true });
-        for (const uid of uids || []) {
-          const msg = await client.fetchOne(String(uid), { envelope: true, headers: HEADER_NAMES }, { uid: true });
-          const verdict = classifyReply(
-            { from: msg?.envelope?.from?.[0]?.address, subject: msg?.envelope?.subject, headers: parseHeaders(msg?.headers) },
-            { contactEmail: opts.fromEmail, ownEmail: config.gmailUser, exactFrom: via === "from-subject" },
-          );
-          if (verdict.ok) return { matched: true, via, uid };
-        }
-      }
-      return false;
-    },
-    async close() {
+  return createCheckerFromClient(client, config, {
+    onClose: async () => {
       try {
         lock.release();
       } finally {
         await client.logout().catch(() => {});
       }
     },
-  };
+  });
 }
 
 /**

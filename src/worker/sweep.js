@@ -10,6 +10,13 @@ const FATAL_CODES = new Set([
   "EAI_AGAIN", "EPIPE", "NOCONNECTION", "CLOSEDAFTERCONNECTTLS", "ECONNECTION",
 ]);
 
+// A sweep counts as successful (advances lastSuccessAt, releases the follow-up hold) when there was
+// no fatal error and no more than max(3, 5%) of the candidates failed; one poisoned row must not
+// hold every follow-up for 30 days. rowErrors stays visible on the dashboard.
+export function sweepTolerance(candidates) {
+  return Math.max(3, Math.floor(candidates * 0.05));
+}
+
 // Connection/auth class errors poison the whole run; anything else is a per-row problem.
 export function isFatalSweepError(err) {
   return Boolean(err?.fatal || err?.authenticationFailed || FATAL_CODES.has(String(err?.code ?? "").toUpperCase()));
@@ -83,9 +90,11 @@ async function doSweep({ pool, config, checkReply, openChecker, logger = console
 
   let fatal = null;
   let stopped = false;
+  let candidates = 0;
   try {
     const since = new Date(startedAt.getTime() - SWEEP_WINDOW_DAYS * DAY_MS);
     const { rows } = await pool.query(CANDIDATES, [injected ? null : false, since]);
+    candidates = rows.length;
     for (const row of rows) {
       if (shouldStop()) {
         stopped = true;
@@ -119,6 +128,8 @@ async function doSweep({ pool, config, checkReply, openChecker, logger = console
       } catch (err) {
         // e.g. opted out between the SELECT and now; nothing to retry.
         logger.error(`reply sweep row failed contact=${row.id} stage=mark ${code(err)}`);
+        // 404/409 are expected races (deleted / opted out meanwhile); anything else is a real failure.
+        if (err?.status !== 404 && err?.status !== 409) summary.rowErrors += 1;
       }
     }
   } finally {
@@ -129,6 +140,6 @@ async function doSweep({ pool, config, checkReply, openChecker, logger = console
     await record({ ok: false, errorCode: String(fatal.code ?? fatal.name ?? "Error"), rowErrors: summary.rowErrors });
     return { ...summary, error: true };
   }
-  await record({ ok: summary.rowErrors === 0, errorCode: null, rowErrors: summary.rowErrors });
+  await record({ ok: summary.rowErrors <= sweepTolerance(candidates), errorCode: null, rowErrors: summary.rowErrors });
   return summary;
 }

@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { createTestDb } from "../helpers/db.js";
 import { seedBatch, addMessage } from "../helpers/seed.js";
 import { runSweep } from "../../src/worker/sweep.js";
-import { buildReplySearches, classifyReply, parseHeaders } from "../../src/imap.js";
-import { followupSendsAllowed, SWEEP_WINDOW_DAYS } from "../../src/worker/sweep.js";
+import { buildReplySearches, classifyReply, parseHeaders, createCheckerFromClient } from "../../src/imap.js";
+import { followupSendsAllowed, SWEEP_WINDOW_DAYS, sweepTolerance, isFatalSweepError } from "../../src/worker/sweep.js";
+import { stopWorkers } from "../../src/worker/poller.js";
 
 let db, pool;
 before(async () => {
@@ -266,4 +267,138 @@ test("follow-up sends are held when the last successful sweep is older than 1 ho
   assert.equal(await followupSendsAllowed(pool, cfg, now), true, "recent success");
   assert.equal(await followupSendsAllowed(pool, { ...cfg, dryRun: true }, now), true, "dry-run never held");
   assert.equal(await followupSendsAllowed(pool, { ...cfg, replySweepEnabled: false }, now), true, "sweep disabled");
+});
+
+// --- C1: imapflow never throws from search()/fetchOne(); it returns false/undefined ----------------
+const fakeClient = (o = {}) => ({
+  usable: true,
+  mailbox: { path: "INBOX" },
+  search: async () => [],
+  fetchOne: async () => undefined,
+  ...o,
+});
+const OPTS = { fromEmail: "ann@example.com", subject: "S", since: new Date() };
+const goodMsg = { envelope: { from: [{ address: "ann@example.com" }], subject: "Re: S" }, headers: Buffer.from("") };
+
+test("IMAP checker: an empty array is a real 'no reply'; a match returns uid and via", async () => {
+  assert.equal(await createCheckerFromClient(fakeClient(), { gmailUser: "me@gmail.com" }).check("<a@b>", OPTS), false);
+  const hit = createCheckerFromClient(fakeClient({ search: async () => [7], fetchOne: async () => goodMsg }), { gmailUser: "me@gmail.com" });
+  assert.deepEqual(await hit.check("<a@b>", OPTS), { matched: true, via: "in-reply-to", uid: 7 });
+});
+
+test("IMAP checker: search() returning false/undefined is an error, never 'no reply'", async () => {
+  for (const bad of [false, undefined, null]) {
+    const ck = createCheckerFromClient(fakeClient({ search: async () => bad }), { gmailUser: "me@gmail.com" });
+    await assert.rejects(ck.check("<a@b>", OPTS), (e) => e.code === "ESEARCH" && !isFatalSweepError(e), String(bad));
+  }
+});
+
+test("IMAP checker: a closed connection / unselected mailbox is a FATAL error", async () => {
+  for (const c of [fakeClient({ usable: false }), fakeClient({ mailbox: false }), fakeClient({ mailbox: undefined })]) {
+    const ck = createCheckerFromClient(c, { gmailUser: "me@gmail.com" });
+    await assert.rejects(ck.check("<a@b>", OPTS), (e) => isFatalSweepError(e));
+  }
+  // The connection dies during the search: it returns false and the mailbox is gone afterwards.
+  const c = fakeClient();
+  c.search = async () => { c.mailbox = false; return false; };
+  await assert.rejects(createCheckerFromClient(c, { gmailUser: "me@gmail.com" }).check("<a@b>", OPTS), (e) => isFatalSweepError(e));
+});
+
+test("IMAP checker: a falsy fetchOne() result is an error, not a non-match", async () => {
+  for (const bad of [undefined, false, null]) {
+    const ck = createCheckerFromClient(fakeClient({ search: async () => [9], fetchOne: async () => bad }), { gmailUser: "me@gmail.com" });
+    await assert.rejects(ck.check("<a@b>", OPTS), (e) => e.code === "EFETCH" && !isFatalSweepError(e), String(bad));
+  }
+  const gone = fakeClient({ search: async () => [9] });
+  gone.fetchOne = async () => { gone.usable = false; return undefined; };
+  await assert.rejects(createCheckerFromClient(gone, { gmailUser: "me@gmail.com" }).check("<a@b>", OPTS), (e) => isFatalSweepError(e));
+});
+
+test("sweep with a checker whose search returns false does not mark ok and never releases the follow-up hold", async () => {
+  await pool.query("delete from settings where key='sweep_state'");
+  const { c } = await sentContact();
+  const openChecker = async () => createCheckerFromClient(fakeClient({ search: async () => false }), { gmailUser: "me@gmail.com" });
+  const out = await runSweep({ pool, config: { dryRun: false, replySweepEnabled: true }, openChecker, logger: quiet() });
+  assert.ok(out.rowErrors >= 1 || out.error);
+  assert.equal((await contactRow(c.id)).status, "sent");
+  // one failing row among few candidates is within tolerance, so make every row fail beyond it
+  for (let i = 0; i < 4; i++) await sentContact();
+  await runSweep({ pool, config: { dryRun: false, replySweepEnabled: true }, openChecker, logger: quiet() });
+  assert.equal(await followupSendsAllowed(pool, { dryRun: false, replySweepEnabled: true }), false);
+});
+
+// --- I-new-2: tolerance ------------------------------------------------------------------------
+test("sweepTolerance is max(3, 5% of candidates)", () => {
+  assert.equal(sweepTolerance(0), 3);
+  assert.equal(sweepTolerance(10), 3);
+  assert.equal(sweepTolerance(60), 3);
+  assert.equal(sweepTolerance(100), 5);
+  assert.equal(sweepTolerance(400), 20);
+});
+
+test("a sweep with rowErrors <= tolerance still counts as successful; above it does not", async () => {
+  await pool.query("TRUNCATE batches CASCADE");
+  await pool.query("delete from settings where key='sweep_state'");
+  const rows = [];
+  for (let i = 0; i < 6; i++) rows.push(await sentContact());
+  const failing = (n) => {
+    const bad = new Set(rows.slice(0, n).map((r) => `<${r.c.id}@x>`));
+    return async (_cfg, id) => {
+      if (bad.has(id)) throw Object.assign(new Error("x"), { code: "EPARSE" });
+      return false;
+    };
+  };
+  const stateOf = async () => (await pool.query("select value from settings where key='sweep_state'")).rows[0].value;
+  const ok = await runSweep({ pool, config: { dryRun: false }, checkReply: failing(3), logger: quiet() });
+  assert.equal(ok.rowErrors, 3);
+  let st = await stateOf();
+  assert.equal(st.ok, true);
+  assert.equal(st.rowErrors, 3);
+  const firstSuccess = st.lastSuccessAt;
+  await new Promise((r) => setTimeout(r, 20));
+  const bad = await runSweep({ pool, config: { dryRun: false }, checkReply: failing(4), logger: quiet() });
+  assert.equal(bad.rowErrors, 4);
+  st = await stateOf();
+  assert.equal(st.ok, false);
+  assert.equal(st.rowErrors, 4);
+  assert.equal(st.lastSuccessAt, firstSuccess, "lastSuccessAt does not advance");
+});
+
+// --- minor: markReplied failures ----------------------------------------------------------------
+test("an unexpected markReplied failure counts as a row error; an expected 409 (opted out meanwhile) does not", async () => {
+  await pool.query("TRUNCATE batches CASCADE");
+  const unexpected = await sentContact();
+  const brokenPool = { query: pool.query.bind(pool), connect: async () => { throw new Error("db down"); } };
+  const logger = quiet();
+  const out = await runSweep({ pool: brokenPool, config: { dryRun: false }, logger, checkReply: async (_c, id) => id === `<${unexpected.c.id}@x>` });
+  assert.equal(out.rowErrors, 1);
+  assert.match(logger.lines.join("\n"), /stage=mark/);
+  assert.doesNotMatch(logger.lines.join("\n"), /db down/);
+
+  await pool.query("TRUNCATE batches CASCADE");
+  const expected = await sentContact();
+  const out2 = await runSweep({
+    pool, config: { dryRun: false }, logger: quiet(),
+    checkReply: async (_c, id) => {
+      if (id !== `<${expected.c.id}@x>`) return false;
+      await pool.query("update contacts set status='opted_out' where id=$1", [expected.c.id]);
+      return true;
+    },
+  });
+  assert.equal(out2.rowErrors, 0);
+  assert.equal(out2.replied, 0);
+});
+
+// --- I-new-1: shutdown order --------------------------------------------------------------------
+test("stopWorkers stops the send poller first and does not wait for the sweep before stopping it", async () => {
+  const log = [];
+  let releaseSend;
+  const send = { stop: () => (log.push("send:stop"), new Promise((r) => (releaseSend = () => (log.push("send:done"), r())))) };
+  const sweep = { stop: async () => void log.push("sweep:stop") };
+  const p = stopWorkers(send, sweep);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(log, ["send:stop", "sweep:stop"], "both stopped immediately, send first, while the send is still in flight");
+  releaseSend();
+  await p;
+  await stopWorkers(null, undefined); // tolerates missing pollers
 });

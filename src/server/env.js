@@ -1,3 +1,4 @@
+import { existsSync, statSync } from "node:fs";
 import { z } from "zod";
 
 const bool = (def) =>
@@ -45,6 +46,15 @@ const schema = z
   .refine((e) => e.SEND_GAP_SECONDS_MIN <= e.SEND_GAP_SECONDS_MAX, {
     message: "SEND_GAP_SECONDS_MIN must be <= SEND_GAP_SECONDS_MAX",
     path: ["SEND_GAP_SECONDS_MAX"],
+  })
+  .superRefine((e, ctx) => {
+    if (e.DRY_RUN) return;
+    // Fail fast: a real run must never go out without the signature and the resume.
+    for (const key of ["SIGNATURE_PATH", "RESUME_PATH"]) {
+      const p = e[key]?.trim();
+      const isFile = p && existsSync(p) && statSync(p).isFile();
+      if (!isFile) ctx.addIssue({ code: "custom", path: [key], message: `${key} must point to an existing file when DRY_RUN=false` });
+    }
   })
   .refine((e) => e.DRY_RUN || (e.GMAIL_USER && e.GMAIL_APP_PASSWORD), {
     message: "GMAIL_USER and GMAIL_APP_PASSWORD are required when DRY_RUN=false",

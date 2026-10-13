@@ -5,7 +5,7 @@ import { createPool } from "../db/pool.js";
 import { migrate } from "../db/migrate.js";
 import { createApp } from "./app.js";
 import { createMailer } from "../mailer.js";
-import { createPoller } from "../worker/poller.js";
+import { createPoller, stopWorkers } from "../worker/poller.js";
 import { runTick } from "../worker/tick.js";
 import { runSweep } from "../worker/sweep.js";
 
@@ -56,8 +56,7 @@ async function shutdown() {
   if (closing) return;
   closing = true;
   setTimeout(() => process.exit(0), 120_000).unref(); // hard stop if a send hangs
-  await sweepPoller?.stop();
-  await poller?.stop(); // lets an in-flight send finish and be recorded
+  await stopWorkers(poller, sweepPoller); // lets an in-flight send finish and be recorded
   server.close(async () => {
     await pool.end().catch(() => {});
     process.exit(0);
