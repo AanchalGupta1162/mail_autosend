@@ -1,14 +1,20 @@
 import { Router } from "express";
-import { runSweep } from "../../worker/sweep.js";
+import { followupSendsAllowed, runSweep } from "../../worker/sweep.js";
 
 const DAY_MS = 86_400_000;
 
 // A fixed number of aggregate queries (no per-row follow-ups), run concurrently.
 export async function loadDashboard(pool, config) {
   const since = new Date(Date.now() - DAY_MS);
-  const [totals, sent, rate, upcoming, events, companies] = await Promise.all([
+  const [totals, sent, rate, upcoming, events, companies, sweepState, allowed] = await Promise.all([
     pool.query("SELECT status, count(*)::int AS n FROM contacts GROUP BY status"),
-    pool.query("SELECT count(*)::int AS n FROM messages WHERE state = 'sent' AND dry_run = $1 AND sent_at > $2", [Boolean(config.dryRun), since]),
+    // Same accounting as the send cap in tick.js (sent, in flight, recent needs_review).
+    pool.query(
+      `SELECT count(*)::int AS n FROM messages
+        WHERE dry_run = $1
+          AND ((state = 'sent' AND sent_at > $2) OR state = 'sending' OR (state = 'needs_review' AND claimed_at > $2))`,
+      [Boolean(config.dryRun), since],
+    ),
     pool.query(
       `SELECT count(*)::int AS contacted, count(*) FILTER (WHERE c.status = 'replied')::int AS replied
          FROM contacts c WHERE EXISTS (SELECT 1 FROM messages m WHERE m.contact_id = c.id AND m.kind = 'initial' AND m.state = 'sent')`,
@@ -28,6 +34,8 @@ export async function loadDashboard(pool, config) {
               count(*) FILTER (WHERE c.status = 'replied')::int AS replied
          FROM contacts c GROUP BY c.company ORDER BY total DESC, c.company LIMIT 10`,
     ),
+    pool.query("SELECT value FROM settings WHERE key = 'sweep_state'"),
+    followupSendsAllowed(pool, config, new Date()),
   ]);
   const byStatus = { uploaded: 0, scheduled: 0, sent: 0, replied: 0, bounced: 0, opted_out: 0, failed: 0 };
   for (const r of totals.rows) byStatus[r.status] = r.n;
@@ -43,6 +51,8 @@ export async function loadDashboard(pool, config) {
     })),
     recentEvents: events.rows.map((r) => ({ id: Number(r.id), contactId: r.contact_id, type: r.type, meta: r.meta, at: r.at, email: r.email })),
     byCompany: companies.rows,
+    sweep: sweepState.rows[0]?.value ?? null,
+    followupsHeld: !allowed,
   };
 }
 

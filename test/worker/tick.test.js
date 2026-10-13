@@ -543,3 +543,19 @@ test("REAL SMTP (d4): connection refused -> back to scheduled with backoff and a
   assert.equal(row.attempts, 1);
   assert.ok(row.scheduled_for.getTime() > t0 + 60_000);
 });
+
+test("follow-ups are held while the reply sweep is stale; initials are unaffected", async () => {
+  await pool.query("delete from settings where key='sweep_state'");
+  const fu = await sentContact({ followup_requested: true });
+  const f = await addMessage(pool, fu.contact.id, { kind: "followup" });
+  const ini = await dueInitial();
+  const m = fakeMailer();
+  const cfg = { replySweepEnabled: true };
+  await tick({ mailer: m, config: cfg });
+  assert.equal((await msgRow(ini.msg.id)).state, "sent");
+  assert.equal((await msgRow(f.id)).state, "scheduled", "follow-up held");
+  await pool.query("insert into settings(key,value) values('sweep_state',$1)", [JSON.stringify({ ok: true, lastSuccessAt: new Date().toISOString() })]);
+  await tick({ mailer: m, config: cfg });
+  assert.equal((await msgRow(f.id)).state, "sent", "released after a fresh successful sweep");
+  await pool.query("delete from settings where key='sweep_state'");
+});

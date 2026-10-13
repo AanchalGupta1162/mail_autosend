@@ -122,3 +122,8 @@ test("POLL_INTERVAL_SECONDS defaults to 30 and must be a positive integer", () =
   assert.equal(loadServerConfig({ ...base, POLL_INTERVAL_SECONDS: "5" }).pollIntervalSeconds, 5);
   assert.throws(() => loadServerConfig({ ...base, POLL_INTERVAL_SECONDS: "0" }), /POLL_INTERVAL_SECONDS/);
 });
+
+test("REPLY_SWEEP_ENABLED defaults to true and can be turned off", () => {
+  assert.equal(loadServerConfig(base).replySweepEnabled, true);
+  assert.equal(loadServerConfig({ ...base, REPLY_SWEEP_ENABLED: "false" }).replySweepEnabled, false);
+});

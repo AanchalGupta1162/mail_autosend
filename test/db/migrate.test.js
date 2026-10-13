@@ -34,7 +34,7 @@ test("migrate is idempotent", async () => {
   const again = await migrate(db.pool);
   assert.deepEqual(again.applied, []);
   const { rows } = await db.pool.query("select count(*)::int n from schema_migrations");
-  assert.equal(rows[0].n, 2);
+  assert.equal(rows[0].n, 3);
 });
 
 test("search_path is the test schema, nothing leaks into public", async () => {

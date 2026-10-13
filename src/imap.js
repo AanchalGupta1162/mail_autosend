@@ -1,26 +1,63 @@
 import { ImapFlow } from "imapflow";
 
+const HEADER_NAMES = ["auto-submitted", "x-autoreply", "x-autorespond", "precedence"];
+
 // Gmail may rewrite the Message-ID on delivery, so matching on the stored id alone can miss a
-// reply. The ordered searches are: In-Reply-To, References, then (when contact details are given)
+// reply. Ordered searches: In-Reply-To, References, then (when contact details are given)
 // "from the recipient, subject contains the original subject, since the send date".
+// Each entry is tagged with `via` so the audit trail says which search matched.
 export function buildReplySearches(messageId, { fromEmail, subject, since } = {}) {
-  const searches = [{ header: { "in-reply-to": messageId } }, { header: { references: messageId } }];
+  const searches = [
+    { via: "in-reply-to", query: { header: { "in-reply-to": messageId } } },
+    { via: "references", query: { header: { references: messageId } } },
+  ];
   const clean = (v) => typeof v === "string" && v.trim() !== "" && !/[\r\n]/.test(v);
   if (clean(fromEmail) && clean(subject) && since instanceof Date) {
-    searches.push({ from: fromEmail.trim().toLowerCase(), subject, since });
+    searches.push({ via: "from-subject", query: { from: fromEmail.trim().toLowerCase(), subject, since } });
   }
   return searches;
 }
 
-/**
- * Returns true if the inbox contains any message whose In-Reply-To or
- * References header points at the given Message-ID — i.e. a reply to it.
- * Throws on connection/search errors; callers should treat that as
- * "unknown, skip this row" rather than "no reply".
- */
-export async function checkForReply(config, messageId, opts = {}) {
-  if (!messageId) return false;
+// Raw header block -> Map(lowercase name -> unfolded value).
+export function parseHeaders(raw) {
+  const out = new Map();
+  if (!raw) return out;
+  const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+  const unfolded = text.replace(/\r?\n[ \t]+/g, " ");
+  for (const line of unfolded.split(/\r?\n/)) {
+    const i = line.indexOf(":");
+    if (i > 0) out.set(line.slice(0, i).trim().toLowerCase(), line.slice(i + 1).trim());
+  }
+  return out;
+}
 
+const AUTO_SUBJECT = /^\s*(?:(?:re|fwd?)\s*:\s*)*(?:automatic reply|out of office)\b/i;
+
+// Decides whether a search hit is a genuine human reply. Rejects auto-replies, bounces, mail
+// from the sending account itself, and (for the loose fallback search) any sender that is not
+// exactly the contact. headers is a Map from parseHeaders.
+export function classifyReply({ from, subject, headers }, { contactEmail, ownEmail, exactFrom = false } = {}) {
+  const sender = typeof from === "string" ? from.trim().toLowerCase() : "";
+  if (!sender) return { ok: false, reason: "no sender" };
+  const local = sender.split("@")[0];
+  if (local === "mailer-daemon" || local === "postmaster") return { ok: false, reason: "bounce sender" };
+  if (ownEmail && sender === String(ownEmail).trim().toLowerCase()) return { ok: false, reason: "own address" };
+  const h = headers instanceof Map ? headers : new Map();
+  const autoSubmitted = h.get("auto-submitted");
+  if (autoSubmitted !== undefined && autoSubmitted.trim().toLowerCase() !== "no") return { ok: false, reason: "auto-submitted" };
+  if (h.has("x-autoreply") || h.has("x-autorespond")) return { ok: false, reason: "autoreply header" };
+  if (["auto_reply", "bulk", "junk"].includes((h.get("precedence") ?? "").trim().toLowerCase())) return { ok: false, reason: "precedence" };
+  if (typeof subject === "string" && AUTO_SUBJECT.test(subject)) return { ok: false, reason: "auto subject" };
+  if (exactFrom && sender !== String(contactEmail ?? "").trim().toLowerCase()) return { ok: false, reason: "sender mismatch" };
+  return { ok: true };
+}
+
+/**
+ * Opens ONE IMAP connection for a whole sweep. check(messageId, opts) resolves to false or
+ * { matched: true, via, uid }. Connection/auth failures are thrown with fatal = true; callers
+ * must treat any throw as "unknown", never as "no reply". close() must always be called.
+ */
+export async function createReplyChecker(config) {
   const client = new ImapFlow({
     host: "imap.gmail.com",
     port: 993,
@@ -28,20 +65,51 @@ export async function checkForReply(config, messageId, opts = {}) {
     auth: { user: config.gmailUser, pass: config.gmailAppPassword },
     logger: false,
   });
-
-  await client.connect();
+  let lock;
   try {
-    const lock = await client.getMailboxLock("INBOX");
-    try {
-      for (const query of buildReplySearches(messageId, opts)) {
-        const found = await client.search(query);
-        if (found && found.length > 0) return true;
+    await client.connect();
+    lock = await client.getMailboxLock("INBOX");
+  } catch (err) {
+    await client.logout().catch(() => {});
+    err.fatal = true;
+    throw err;
+  }
+  return {
+    async check(messageId, opts = {}) {
+      if (!messageId) return false;
+      for (const { via, query } of buildReplySearches(messageId, opts)) {
+        const uids = await client.search(query, { uid: true });
+        for (const uid of uids || []) {
+          const msg = await client.fetchOne(String(uid), { envelope: true, headers: HEADER_NAMES }, { uid: true });
+          const verdict = classifyReply(
+            { from: msg?.envelope?.from?.[0]?.address, subject: msg?.envelope?.subject, headers: parseHeaders(msg?.headers) },
+            { contactEmail: opts.fromEmail, ownEmail: config.gmailUser, exactFrom: via === "from-subject" },
+          );
+          if (verdict.ok) return { matched: true, via, uid };
+        }
       }
       return false;
-    } finally {
-      lock.release();
-    }
+    },
+    async close() {
+      try {
+        lock.release();
+      } finally {
+        await client.logout().catch(() => {});
+      }
+    },
+  };
+}
+
+/**
+ * One-shot helper (legacy CLI): true if the inbox holds a genuine reply to messageId.
+ * Throws on connection/search errors; treat that as "unknown", not "no reply".
+ */
+export async function checkForReply(config, messageId, opts = {}) {
+  if (!messageId) return false;
+  const checker = await createReplyChecker(config);
+  try {
+    return Boolean(await checker.check(messageId, opts));
   } finally {
-    await client.logout();
+    await checker.close();
   }
 }

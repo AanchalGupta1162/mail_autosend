@@ -85,6 +85,11 @@ test("sentToday counts only same-mode sends in the last 24h", async () => {
     await addMessage(real.pool, contacts[1].id, { state: "sent", sentAt: new Date(Date.now() - H), dryRun: true });
     await addMessage(real.pool, contacts[2].id, { state: "sent", sentAt: new Date(Date.now() - 30 * H), dryRun: false });
     assert.equal((await rc.get("/api/dashboard")).json.sentToday, 1);
+    // Same accounting as the send cap: in-flight and recent needs_review rows count too.
+    const more = await seedBatch(real.pool, ["p@d.example.com", "q@d.example.com"]);
+    await addMessage(real.pool, more.contacts[0].id, { state: "sending", claimedAt: new Date() });
+    await addMessage(real.pool, more.contacts[1].id, { state: "needs_review", claimedAt: new Date(Date.now() - H) });
+    assert.equal((await rc.get("/api/dashboard")).json.sentToday, 3);
   } finally {
     await real.close();
   }
@@ -128,4 +133,15 @@ test("POST /sweep with an injected checker marks replies", async () => {
   } finally {
     await s.close();
   }
+});
+
+test("dashboard exposes the last sweep result and whether follow-ups are held", async () => {
+  await t.pool.query("delete from settings where key='sweep_state'");
+  let r = (await c.get("/api/dashboard")).json;
+  assert.equal(r.sweep, null);
+  assert.equal(r.followupsHeld, false, "dry-run is never held");
+  await t.pool.query("insert into settings(key,value) values('sweep_state',$1)", [JSON.stringify({ ok: false, at: "2026-10-01T00:00:00Z", errorCode: "EAUTH", lastSuccessAt: null })]);
+  r = (await c.get("/api/dashboard")).json;
+  assert.equal(r.sweep.ok, false);
+  assert.equal(r.sweep.errorCode, "EAUTH");
 });

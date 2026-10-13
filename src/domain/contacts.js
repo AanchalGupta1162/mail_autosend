@@ -44,7 +44,7 @@ async function inTx(pool, fn) {
 // Cancels pending (scheduled) messages only; an in-flight 'sending' row is left to the worker.
 const CANCEL_PENDING = `UPDATE messages SET state = 'cancelled' WHERE contact_id = ANY($1::uuid[]) AND state = 'scheduled' RETURNING contact_id`;
 
-export async function markReplied(pool, id, { source = "manual" } = {}) {
+export async function markReplied(pool, id, { source = "manual", meta = {} } = {}) {
   return inTx(pool, async (db) => {
     const cur = await db.query("SELECT status FROM contacts WHERE id = $1 FOR UPDATE", [id]);
     if (!cur.rowCount) throw new HttpError(404, "Contact not found");
@@ -61,7 +61,7 @@ export async function markReplied(pool, id, { source = "manual" } = {}) {
     const cancelled = await db.query(CANCEL_PENDING, [[id]]);
     await db.query("INSERT INTO events(contact_id, type, meta) VALUES ($1, 'replied', $2)", [
       id,
-      JSON.stringify({ source, cancelledMessages: cancelled.rowCount }),
+      JSON.stringify({ ...meta, source, cancelledMessages: cancelled.rowCount }),
     ]);
     return serializeContact(rows[0]);
   });

@@ -3,6 +3,7 @@ import { inTx } from "../domain/contacts.js";
 import { followupDueAt } from "../domain/schedule.js";
 import { getTemplate } from "../domain/template.js";
 import { classifySendError } from "./classify.js";
+import { followupSendsAllowed } from "./sweep.js";
 import { buildMail, loadSignature, newMessageId } from "./send.js";
 
 export const STALE_SENDING_MS = 10 * 60_000;
@@ -39,7 +40,7 @@ async function recoverStale(pool, now) {
 // One transaction under an advisory lock: count (rolling 24h, same dry-run mode) -> claim ->
 // store Message-IDs. The cap counts sent rows, rows in flight, and needs_review rows (which may
 // have gone out). Dry-run and real sends are counted separately.
-async function claim(pool, config, now, maxRows = 1) {
+async function claim(pool, config, now, maxRows = 1, followupsAllowed = true) {
   return inTx(pool, async (db) => {
     await db.query("SELECT pg_advisory_xact_lock($1)", [CLAIM_LOCK_KEY]);
     const since = new Date(now.getTime() - DAY_MS);
@@ -54,11 +55,11 @@ async function claim(pool, config, now, maxRows = 1) {
     const { rows } = await db.query(
       `UPDATE messages SET state = 'sending', claimed_at = $1, attempts = attempts + 1, dry_run = $2, error = NULL
         WHERE id IN (
-          SELECT id FROM messages WHERE state = 'scheduled' AND scheduled_for <= $1
+          SELECT id FROM messages WHERE state = 'scheduled' AND scheduled_for <= $1 AND ($4::boolean OR kind <> 'followup')
            ORDER BY scheduled_for, created_at, id
            FOR UPDATE SKIP LOCKED LIMIT $3)
         RETURNING *`,
-      [now, config.dryRun, limit],
+      [now, config.dryRun, limit, followupsAllowed],
     );
     rows.sort((a, b) => a.scheduled_for - b.scheduled_for || a.created_at - b.created_at || (a.id < b.id ? -1 : 1));
     for (const r of rows) {
@@ -259,7 +260,9 @@ export async function runTick({
   // per-tick limit are re-evaluated before every claim.
   for (let i = 0; i < config.maxPerTick; i++) {
     if (shouldStop()) break;
-    const [row] = await claim(pool, config, clock(), 1);
+    // Follow-ups wait while reply detection is stale (a reply could be sitting unseen).
+    const followupsAllowed = await followupSendsAllowed(pool, config, clock());
+    const [row] = await claim(pool, config, clock(), 1, followupsAllowed);
     if (!row) break;
     summary.claimed += 1;
     let entered = false;
