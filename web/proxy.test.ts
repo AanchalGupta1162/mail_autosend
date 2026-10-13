@@ -48,6 +48,15 @@ describe("proxy (auth guard + CSP)", () => {
     expect(nonce(a.headers)).not.toBe(nonce(b.headers));
   });
 
+  it("never redirects a signed-in user off-origin via /login?next= (tab/newline/backslash tricks)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    for (const raw of ["/\t/evil.com", "/\n/evil.com", "/\r\\evil.com", "//evil.com", "/\\evil.com", "https://evil.com"]) {
+      const res = await proxy(req(`/login?next=${encodeURIComponent(raw)}`, "sid=good"));
+      expect(res.status, JSON.stringify(raw)).toBe(307);
+      expect(new URL(res.headers.get("location")!).origin, JSON.stringify(raw)).toBe("http://localhost:3001");
+    }
+  });
+
   it("signed-in users hitting /login go to the dashboard", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
     const res = await proxy(req("/login", "sid=good"));
