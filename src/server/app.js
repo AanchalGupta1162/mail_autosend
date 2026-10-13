@@ -10,14 +10,18 @@ import { contactsRouter } from "./routes/contacts.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { resumesRouter } from "./routes/resumes.js";
 import { schedulingRouter } from "./routes/scheduling.js";
+import { settingsRouter } from "./routes/settings.js";
+import { internalRouter } from "./routes/internal.js";
+import { createJsonLogger } from "../logger.js";
 import { createResumeStorage } from "../storage/resumes.js";
 import { errorHandler, notFound } from "./errors.js";
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
-// createApp({pool, config, mailer?, logger?, loginRateLimit?, csrfRateLimit?}) -> express app.
+// createApp({pool, config, mailer?, logger?, loginRateLimit?, csrfRateLimit?, internalVerifier?, shutdownSignal?}) -> express app.
+// internalVerifier(idToken, audience) -> payload replaces the Google OIDC check (tests inject one: no network).
 // The session table comes from migration 002 (resolved via the pool's search_path).
-export function createApp({ pool, config, mailer, checkReply, resumeStorage, logger = console, loginRateLimit = {}, csrfRateLimit = {} } = {}) {
+export function createApp({ pool, config, mailer, checkReply, resumeStorage, logger = createJsonLogger(), loginRateLimit = {}, csrfRateLimit = {}, internalVerifier, shutdownSignal } = {}) {
   if (!pool) throw new Error("pool is required");
   if (typeof config?.sessionSecret !== "string" || config.sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters");
@@ -57,6 +61,10 @@ export function createApp({ pool, config, mailer, checkReply, resumeStorage, log
 
   // Public, no data, no session.
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
+
+  // Machine endpoints for Cloud Scheduler: OIDC bearer token only, mounted before session/CSRF so no cookie
+  // is read or created. This is the only prefix besides /healthz that skips the session guards.
+  app.use("/internal", internalRouter({ pool, config, mailer, checkReply, logger, verify: internalVerifier, shutdownSignal }));
 
   const PgStore = connectPgSimple(session);
   app.use(
@@ -114,6 +122,7 @@ export function createApp({ pool, config, mailer, checkReply, resumeStorage, log
   app.use("/api/batches", batchesRouter({ pool, config }));
   app.use("/api/contacts", contactsRouter({ pool, config }));
   app.use("/api", schedulingRouter({ pool, config }));
+  app.use("/api", settingsRouter({ pool, config }));
   app.use("/api", dashboardRouter({ pool, config, checkReply, logger }));
   app.use("/api", notFound);
 
