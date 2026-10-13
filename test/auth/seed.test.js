@@ -24,3 +24,12 @@ test("seedAdmin creates, then updates idempotently, and resets lockout", async (
   assert.equal(await verifyPassword("second-password-2", rows[0].password_hash), true);
   assert.equal(await verifyPassword("first-password-1", rows[0].password_hash), false);
 });
+
+test("seedAdmin refuses a placeholder password and writes nothing", async () => {
+  await db.pool.query("delete from users");
+  await assert.rejects(
+    seedAdmin(db.pool, { username: "ghost", password: "PLACEHOLDER-replace-with-gcloud-secrets-versions-add" }),
+    (e) => /ADMIN_PASSWORD/.test(e.message) && !e.message.includes("PLACEHOLDER-replace"),
+  );
+  assert.equal((await db.pool.query("select count(*)::int n from users")).rows[0].n, 0);
+});

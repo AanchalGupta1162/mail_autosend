@@ -1,10 +1,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { hashPassword } from "../src/auth/password.js";
+import { isPlaceholderValue } from "../src/server/env.js";
 
 // Idempotent upsert keyed on lower(username). Also clears any lockout.
 // Returns "created" | "updated". Never logs the password or hash.
 export async function seedAdmin(pool, { username, password }) {
+  // Defence in depth: the config loader already refuses this, but a direct caller must not seed a known password.
+  if (isPlaceholderValue(password)) throw new Error("Invalid admin configuration: ADMIN_PASSWORD is still a placeholder value; add a real secret version");
   const hash = await hashPassword(password);
   const { rows } = await pool.query(
     `INSERT INTO users (username, password_hash) VALUES ($1, $2)

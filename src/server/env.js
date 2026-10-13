@@ -39,12 +39,21 @@ const hops = () =>
       return z.NEVER;
     });
 
+// infra/secrets.tf seeds every secret with a literal "PLACEHOLDER-..." version 1 so Cloud Run can resolve "latest" on
+// the first apply. Such a value must never be used: refuse it by name (the message never echoes the value).
+export const isPlaceholderValue = (v) => typeof v === "string" && v.trimStart().toUpperCase().startsWith("PLACEHOLDER");
+const notPlaceholder = (name) => [(v) => !isPlaceholderValue(v), { message: `${name} is still a placeholder value; add a real secret version` }];
+
 const schema = z
   .object({
-    DATABASE_URL: z.string({ error: "DATABASE_URL is required" }).min(1, "DATABASE_URL is required"),
+    DATABASE_URL: z
+      .string({ error: "DATABASE_URL is required" })
+      .min(1, "DATABASE_URL is required")
+      .refine(...notPlaceholder("DATABASE_URL")),
     SESSION_SECRET: z
       .string({ error: "SESSION_SECRET is required" })
-      .min(32, "SESSION_SECRET must be at least 32 characters"),
+      .min(32, "SESSION_SECRET must be at least 32 characters")
+      .refine(...notPlaceholder("SESSION_SECRET")),
     NODE_ENV: z.enum(["development", "production", "test"]).optional().default("development"),
     PORT: int(3000, 1),
     DRY_RUN: bool(true),
@@ -56,13 +65,17 @@ const schema = z
     SEND_GAP_SECONDS_MAX: int(45, 0),
     TRUST_PROXY: hops(),
     GMAIL_USER: z.string().optional(),
-    GMAIL_APP_PASSWORD: z.string().optional(),
+    GMAIL_APP_PASSWORD: z
+      .string()
+      .optional()
+      .refine(...notPlaceholder("GMAIL_APP_PASSWORD")),
     FROM_NAME: z.string().optional(),
     RESUME_PATH: z.string().optional(),
     SIGNATURE_PATH: z.string().optional(),
     SIGNATURE_HTML: z
       .string()
       .optional()
+      .refine(...notPlaceholder("SIGNATURE_HTML"))
       .refine((v) => v === undefined || Buffer.byteLength(v, "utf8") <= MAX_SIGNATURE_HTML_BYTES, {
         message: `SIGNATURE_HTML must be at most ${MAX_SIGNATURE_HTML_BYTES} bytes`,
       }),
@@ -166,7 +179,8 @@ const adminSchema = z.object({
     .regex(/^[^\s\p{Cc}]+$/u, "ADMIN_USERNAME must not contain whitespace or control characters"),
   ADMIN_PASSWORD: z
     .string({ error: "ADMIN_PASSWORD is required" })
-    .min(10, "ADMIN_PASSWORD must be at least 10 characters"),
+    .min(10, "ADMIN_PASSWORD must be at least 10 characters")
+    .refine(...notPlaceholder("ADMIN_PASSWORD")),
 });
 
 // Used by scripts/seedAdmin.js. Errors name the variable, never echo its value.

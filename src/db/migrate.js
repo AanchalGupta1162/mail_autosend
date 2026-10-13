@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
 const LOCK_KEY = 727_001; // advisory lock so concurrent migrators serialize
 
+export const errorLabel = (err) => `${err?.name ?? "Error"} ${err?.code ?? ""}`.trim();
+
 // Applies pending *.sql migrations in filename order, each in its own transaction.
 // Tracks them in schema_migrations (resolved through the pool's search_path).
 // Serialized with a TRANSACTION-scoped advisory lock: it is released by COMMIT/ROLLBACK
@@ -34,7 +36,8 @@ export async function migrate(pool, dir = DIR) {
         await client.query("COMMIT");
       } catch (err) {
         await client.query("ROLLBACK").catch(() => {});
-        throw new Error(`Migration ${file} failed: ${err.message}`);
+        // name/code only: a driver message can carry connection details.
+        throw new Error(`Migration ${file} failed: ${errorLabel(err)}`);
       }
       applied.push(file);
     }
@@ -61,7 +64,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     );
     console.log("Tables:", rows.map((r) => r.table_name).join(", "));
   } catch (err) {
-    console.error(err.message);
+    // Wrapped migration errors are already name/code only; anything else (connect, auth) is reduced the same way.
+    console.error(/^Migration .+ failed: /.test(err?.message ?? "") ? err.message : `Migration run failed: ${errorLabel(err)}`);
     process.exitCode = 1;
   } finally {
     await pool.end();

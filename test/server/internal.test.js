@@ -233,7 +233,7 @@ test("/internal/sweep runs the existing single-flight sweep and returns its summ
   const r = await post("/internal/sweep", "good");
   assert.equal(r.status, 200);
   // test config is dry-run: runSweep reports skipped(dry_run) unless a checker is injected; here one is
-  assert.deepEqual(r.json, { ok: true, result: { checked: 0, replied: 0, rowErrors: 0 } });
+  assert.deepEqual(r.json, { ok: true, result: { checked: 0, replied: 0, rowErrors: 0, ok: true } });
 });
 
 test("/internal/sweep: a sweep already running is 200 skipped in_progress", async () => {
@@ -268,6 +268,20 @@ test("/internal/sweep honours shutdown (stops before checking anything)", async 
     const r = await fetch(t2.url + "/internal/sweep", { method: "POST", headers: { authorization: "Bearer good" } });
     assert.equal(r.status, 200);
     assert.equal(checked, 0);
+  } finally {
+    await t2.close();
+  }
+});
+
+test("/internal/sweep logs ok=true for a healthy sweep so the success metric can exclude unhealthy ones", async () => {
+  const lines = [];
+  const logger = { info: (m, f) => lines.push({ m, f }), warn() {}, error() {}, debug() {} };
+  const t2 = await startTestApp(ENV, { appOptions: { internalVerifier: verifier, checkReply: async () => null, logger } });
+  try {
+    const r = await fetch(t2.url + "/internal/sweep", { method: "POST", headers: { authorization: "Bearer good" } });
+    assert.equal(r.status, 200);
+    const entry = lines.find((l) => l.f?.event === "internal_sweep");
+    assert.equal(entry?.f.ok, true);
   } finally {
     await t2.close();
   }

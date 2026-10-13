@@ -94,7 +94,7 @@ async function doSweep({ pool, config, checkReply, openChecker, logger = console
   } catch (err) {
     logger.error(`reply sweep failed to connect: ${code(err)}`);
     await record({ ok: false, errorCode: String(err?.code ?? err?.name ?? "Error"), rowErrors: 0 });
-    return { ...summary, error: true };
+    return { ...summary, error: true, ok: false };
   }
 
   let fatal = null;
@@ -147,8 +147,9 @@ async function doSweep({ pool, config, checkReply, openChecker, logger = console
   if (stopped) return summary; // shutdown: say nothing about sweep health
   if (fatal) {
     await record({ ok: false, errorCode: String(fatal.code ?? fatal.name ?? "Error"), rowErrors: summary.rowErrors });
-    return { ...summary, error: true };
+    return { ...summary, error: true, ok: false };
   }
-  await record({ ok: sweepOk({ candidates, checked: summary.checked, rowErrors: summary.rowErrors }), errorCode: null, rowErrors: summary.rowErrors });
-  return summary;
+  const ok = sweepOk({ candidates, checked: summary.checked, rowErrors: summary.rowErrors });
+  await record({ ok, errorCode: null, rowErrors: summary.rowErrors });
+  return { ...summary, ok }; // logged by /internal/sweep so the Cloud Monitoring success metric can filter on it
 }

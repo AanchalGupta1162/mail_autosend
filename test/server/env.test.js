@@ -219,3 +219,29 @@ test("SIGNATURE_HTML replaces SIGNATURE_PATH in real-mode validation and is size
   );
   assert.equal(loadServerConfig({ ...base, SIGNATURE_HTML: "a".repeat(64 * 1024) }).signatureHtml.length, 64 * 1024);
 });
+
+const PLACEHOLDER = "PLACEHOLDER-replace-with-gcloud-secrets-versions-add";
+
+test("placeholder secret values fail validation by variable name and are never echoed", () => {
+  for (const key of ["DATABASE_URL", "SESSION_SECRET", "SIGNATURE_HTML", "GMAIL_APP_PASSWORD"]) {
+    let msg = "";
+    try {
+      loadServerConfig({ ...base, [key]: PLACEHOLDER });
+    } catch (err) {
+      msg = err.message;
+    }
+    assert.match(msg, new RegExp(`${key}.*placeholder`, "i"), key);
+    assert.ok(!msg.includes(PLACEHOLDER), `${key}: value is not echoed`);
+  }
+});
+
+test("loadAdminSeedConfig rejects a placeholder ADMIN_PASSWORD without echoing it", () => {
+  let msg = "";
+  try {
+    loadAdminSeedConfig({ ADMIN_USERNAME: "admin", ADMIN_PASSWORD: PLACEHOLDER });
+  } catch (err) {
+    msg = err.message;
+  }
+  assert.match(msg, /ADMIN_PASSWORD.*placeholder/i);
+  assert.ok(!msg.includes(PLACEHOLDER));
+});

@@ -53,3 +53,21 @@ test("both Dockerfiles pin the node base image by digest", () => {
     for (const l of froms) assert.match(l, /^FROM node:22-bookworm-slim@sha256:[0-9a-f]{64} AS \w+$/, `${f}: ${l}`);
   }
 });
+
+test("migrate failures log only the error name/code, never the message (it can carry the connection string)", async () => {
+  const url = "postgres://leak_user:s3cr3t_pw@127.0.0.1:1/db";
+  await assert.rejects(
+    run(process.execPath, ["src/db/migrate.js"], { env: { PATH: process.env.PATH, DATABASE_URL: url } }),
+    (e) => e.code === 1 && /Error|ECONNREFUSED/.test(e.stderr) && !/s3cr3t_pw|leak_user|127\.0\.0\.1/.test(e.stderr),
+  );
+});
+
+test("a failing migration reports its file and error code, not the database message", async () => {
+  const { mkdtemp, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { default: path } = await import("node:path");
+  const { migrate } = await import("../../src/db/migrate.js");
+  const dir = await mkdtemp(path.join(tmpdir(), "mig-"));
+  await writeFile(path.join(dir, "001_bad.sql"), "SELECT * FROM table_with_secret_name_xyz;");
+  await assert.rejects(migrate(db.pool, dir), (e) => /001_bad\.sql/.test(e.message) && /42P01/.test(e.message) && !/table_with_secret_name_xyz/.test(e.message));
+});
