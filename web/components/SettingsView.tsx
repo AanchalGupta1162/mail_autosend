@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api";
 import { fillTemplate, PLACEHOLDERS, validateTemplate } from "@/lib/template";
 import type { FollowupTemplate } from "@/lib/types";
+import { ResumesPanel } from "./ResumesPanel";
 
 const SAMPLE = { person: "Aisha Rao", role: "Software Engineer Intern", company: "Northwind Labs", subject: "Software Engineer Intern role at Northwind Labs" };
 
@@ -179,6 +180,12 @@ export function SettingsView() {
           Follow-up template
         </h2>
         <TemplateForm />
+      </section>
+      <section className="panel" aria-labelledby="h-resumes">
+        <h2 id="h-resumes" className="panel-title">
+          Resumes
+        </h2>
+        <ResumesPanel />
       </section>
       <section className="panel" aria-labelledby="h-password">
         <h2 id="h-password" className="panel-title">

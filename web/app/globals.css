@@ -1215,3 +1215,44 @@ input:disabled:not([type="checkbox"]) {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- Resume library ---------- */
+.resumes {
+  display: grid;
+  gap: 16px;
+}
+.resume-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.resume-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+.resume-item + .resume-item {
+  border-top: 1px solid var(--line);
+}
+.resume-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+}
+.resume-main .tag {
+  margin-top: 0;
+}
+.tag-success {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.resume-pick {
+  max-width: 100%;
+}
+.attachment-line {
+  margin-top: 2px;
+}
