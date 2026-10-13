@@ -22,6 +22,10 @@ COPY . .
 RUN npm run build
 
 FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS runtime
+# Security hardening of the runtime layer: pick up Debian security fixes published after the pinned
+# base image, and drop npm/npx (not used at runtime; its bundled dependencies trigger scanner findings).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 ARG BACKEND_URL
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 BACKEND_URL=$BACKEND_URL HOSTNAME=0.0.0.0 PORT=3001
 WORKDIR /app
