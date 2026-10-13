@@ -166,6 +166,19 @@ export interface FollowupTemplate {
   body: string;
 }
 
+/** Daily window (local time in `tz`) in which real emails may be sent; start inclusive, end exclusive. */
+export interface SendWindow {
+  start: string;
+  end: string;
+  tz: string;
+}
+
+/** `enforced` is false on servers that do not gate sending (local development). */
+export interface SendWindowInfo {
+  enforced: boolean;
+  window: SendWindow;
+}
+
 export interface FollowupResult {
   contact: Contact;
   followup: Message | null;

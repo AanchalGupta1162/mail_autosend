@@ -184,4 +184,13 @@ describe("BatchScheduler", () => {
     await vi.waitFor(() => expect(seen.find((c) => c.url.endsWith("/schedule"))).toBeTruthy());
     expect(JSON.parse(String(seen.find((c) => c.url.endsWith("/schedule"))!.body))).not.toHaveProperty("resumeId");
   });
+
+  it("tells the operator when sends are held to a daily window, and stays quiet otherwise", () => {
+    stubFetch(() => json({}));
+    const { unmount } = render(<BatchScheduler upload={upload()} sendWindow={{ enforced: true, window: { start: "09:00", end: "10:00", tz: "Asia/Kolkata" } }} />);
+    expect(screen.getByText(/send in the next daily window \(09:00\u201310:00 Asia\/Kolkata\)/i)).toBeInTheDocument();
+    unmount();
+    render(<BatchScheduler upload={upload()} sendWindow={{ enforced: false, window: { start: "09:00", end: "10:00", tz: "Asia/Kolkata" } }} />);
+    expect(screen.queryByText(/next daily window/i)).toBeNull();
+  });
 });

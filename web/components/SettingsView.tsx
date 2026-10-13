@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/api";
 import { fillTemplate, PLACEHOLDERS, validateTemplate } from "@/lib/template";
 import type { Dashboard, FollowupTemplate } from "@/lib/types";
 import { ResumesPanel } from "./ResumesPanel";
+import { SendWindowForm } from "./SendWindowForm";
 import { Loader2 } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -241,6 +242,9 @@ export function SettingsView() {
       <div className="divide-y">
         <Section id="h-status" title="Sending" description="The server's current mode and limits.">
           <SendStatus />
+        </Section>
+        <Section id="h-window" title="Send window" description="The daily hours in which real emails go out.">
+          <SendWindowForm />
         </Section>
         <Section id="h-resumes" title="Resumes" description="PDFs you can attach. The default goes with every email unless you pick another.">
           <ResumesPanel />

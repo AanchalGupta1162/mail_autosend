@@ -18,6 +18,8 @@ import type {
   Refusal,
   Resume,
   RowIssue,
+  SendWindow,
+  SendWindowInfo,
   SweepResult,
   UploadResult,
   User,
@@ -245,6 +247,12 @@ export function createApi(options: ApiOptions = {}) {
     },
     async saveFollowupTemplate(template: FollowupTemplate): Promise<FollowupTemplate> {
       return (await request<{ template: FollowupTemplate }>("PUT", "/api/template/followup", { json: template })).template;
+    },
+    getSendWindow(): Promise<SendWindowInfo> {
+      return request("GET", "/api/settings/send-window");
+    },
+    saveSendWindow(window: SendWindow): Promise<SendWindowInfo> {
+      return request("PUT", "/api/settings/send-window", { json: window });
     },
     getDashboard(): Promise<Dashboard> {
       return request("GET", "/api/dashboard");

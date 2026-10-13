@@ -6,7 +6,8 @@ import { api, ApiError } from "@/lib/api";
 import { checkSendTime, planSchedule, toLocalInputValue, MAX_DAYS_AHEAD, MAX_STAGGER_MINUTES } from "@/lib/schedule";
 import { buildPreviewRows, initialSelection, selectionState, setAll, toggle } from "@/lib/selection";
 import { formatDateTime, localTimeZone, plural } from "@/lib/format";
-import type { ContactStatus, Refusal, Resume, UploadResult } from "@/lib/types";
+import type { ContactStatus, Refusal, Resume, SendWindowInfo, UploadResult } from "@/lib/types";
+import { sendWindowLabel } from "@/lib/sendWindow";
 import { FollowupToggle } from "./FollowupToggle";
 import { Postmark } from "./Postmark";
 import { RefusalList } from "./RefusalList";
@@ -25,7 +26,7 @@ import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-type Props = { upload: UploadResult; resumes?: Resume[]; now?: () => Date };
+type Props = { upload: UploadResult; resumes?: Resume[]; sendWindow?: SendWindowInfo | null; now?: () => Date };
 
 type Outcome = {
   scheduled: number;
@@ -36,7 +37,7 @@ function SelectAll({ state, onChange }: { state: "none" | "some" | "all"; onChan
   return <Checkbox aria-label="Select all" checked={state === "all" ? true : state === "some" ? "indeterminate" : false} onCheckedChange={(v) => onChange(v === true)} />;
 }
 
-export function BatchScheduler({ upload, resumes = [], now = () => new Date() }: Props) {
+export function BatchScheduler({ upload, resumes = [], sendWindow = null, now = () => new Date() }: Props) {
   const rows = useMemo(() => buildPreviewRows(upload.contacts, upload.warnings), [upload]);
   const [selected, setSelected] = useState<string[]>(() => initialSelection(rows));
   const [sendAt, setSendAt] = useState("");
@@ -396,6 +397,11 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
               </p>
             </div>
           </div>
+          {sendWindow?.enforced && (
+            <p className="mt-4 text-[13px] text-muted-foreground">
+              Emails send in the next daily window ({sendWindowLabel(sendWindow.window)}) after the time you choose.
+            </p>
+          )}
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
             <p className="text-[13px] text-muted-foreground" aria-live="polite">
               {n === 0

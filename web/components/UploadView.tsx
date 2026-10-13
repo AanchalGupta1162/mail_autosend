@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import { api, ApiError } from "@/lib/api";
 import { checkCsvFile, MAX_ROWS } from "@/lib/upload";
 import { plural } from "@/lib/format";
-import type { Resume, RowIssue, UploadResult } from "@/lib/types";
+import type { Resume, RowIssue, SendWindowInfo, UploadResult } from "@/lib/types";
 import { FileSpreadsheet, Loader2, RotateCcw, Upload as UploadIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BatchScheduler } from "./BatchScheduler";
@@ -26,8 +26,11 @@ export function UploadView() {
   const [result, setResult] = useState<UploadResult | null>(null);
   const [resumes, setResumes] = useState<Resume[]>([]);
 
+  const [sendWindow, setSendWindow] = useState<SendWindowInfo | null>(null);
+
   useEffect(() => {
     api.listResumes().then(setResumes, () => {});
+    api.getSendWindow().then(setSendWindow, () => {});
   }, []);
 
   function pick(f: File | undefined | null) {
@@ -89,7 +92,7 @@ export function UploadView() {
             </Button>
           }
         />
-        <BatchScheduler upload={result} resumes={resumes} />
+        <BatchScheduler upload={result} resumes={resumes} sendWindow={sendWindow} />
       </div>
     );
   }
