@@ -43,7 +43,7 @@ Prerequisites: `gcloud` logged in as an owner of the project (`gcloud auth login
 
    ```sh
    cd infra
-   cp terraform.tfvars.example terraform.tfvars   # set alert_email and, if you want the budget, billing_account_id
+   cp terraform.tfvars.example terraform.tfvars   # set alert_email, github_repository_id (gh api repos/OWNER/NAME --jq .id) and, if you want the budget, billing_account_id
    terraform init
    ```
 
@@ -107,8 +107,8 @@ Prerequisites: `gcloud` logged in as an owner of the project (`gcloud auth login
   merge, then `terraform apply` locally. CI deliberately has no apply identity.
 * Image rollouts are never Terraform's job. After a rollback to a pinned revision, a Terraform-created revision will not
   take traffic until you run `gcloud run services update-traffic <svc> --to-latest`.
-* `terraform plan` in CI uses `-refresh=false` (the read-only identity cannot read secret payloads). Run a full
-  `terraform plan` locally now and then to see drift.
+* `terraform plan` in CI uses `-refresh=false -lock=false` (config vs state; the read-only identity cannot read secret
+  payloads or resources, and needs no state write). Run a full `terraform plan` locally now and then to see drift.
 * Scheduler `paused` is only honoured at creation. Pause/resume with `gcloud scheduler jobs pause|resume <name>`.
 
 ## Notes and limits
@@ -117,4 +117,10 @@ Prerequisites: `gcloud` logged in as an owner of the project (`gcloud auth login
   It is off until `sweep_alert_enabled = true` (dry-run sweeps are skipped and would alert).
 * Hold/needs-review alerting keys on the `internal_tick` log line the app writes on every tick
   (`held`, `needsReview`, `failed`, `reason=paused`). It fires only while a window is processed, not from the database.
-* `github-planner` has `roles/viewer` and state-bucket access only. It cannot change anything in the project.
+* `github-planner` is read-only: `roles/browser` (project metadata only), `serviceusage.serviceUsageConsumer`, and
+  `roles/storage.objectViewer` on the state bucket. It cannot write or delete state, change anything in the project, or read
+  secret payloads or the resume PDFs (it deliberately lacks `roles/viewer`). Any branch of the repo can run code as it, which is
+  why it gets nothing more. If `terraform init` in the plan job fails with a bucket permission error, run plans locally instead
+  of widening this role.
+* WIF is pinned to the numeric repository id (`github_repository_id`: `gh api repos/OWNER/NAME --jq .id`). The deployer binding
+  also requires the `deploy.yml` workflow file on `refs/heads/main`; never add a `pull_request_target` workflow.
