@@ -62,6 +62,16 @@ describe("api client CSRF handling", () => {
     expect(f.csrfCalls()).toBe(2);
   });
 
+  it("does not retry a 403 that is not the backend's CSRF error", async () => {
+    for (const body of [{ error: "Forbidden" }, null, { error: "invalid csrf token " }]) {
+      const f = fakeFetch(() => (body ? json(body, 403) : new Response("", { status: 403 })));
+      const api = createApi({ fetch: f.fn, onUnauthorized: vi.fn() });
+      await expect(api.markReplied("c1")).rejects.toMatchObject({ status: 403 });
+      expect(f.calls.filter((c) => c.method === "POST"), JSON.stringify(body)).toHaveLength(1);
+      expect(f.csrfCalls()).toBe(1);
+    }
+  });
+
   it("gives up after one retry when the token is still refused", async () => {
     const f = fakeFetch(() => json({ error: "Invalid CSRF token" }, 403));
     const api = createApi({ fetch: f.fn, onUnauthorized: vi.fn() });

@@ -20,15 +20,20 @@ const NAV = [
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [mode, setMode] = useState<Mode>(null);
+  const [mode, setModeState] = useState<Mode>(null);
+  const [modeFailed, setModeFailed] = useState(false);
+  const setMode = useCallback((m: Mode) => {
+    setModeState(m);
+    if (m) setModeFailed(false);
+  }, []);
   const [signingOut, setSigningOut] = useState(false);
 
   const refreshMode = useCallback(() => {
     api
       .getDashboard()
       .then((d) => setMode({ dryRun: d.dryRun, followupsHeld: d.followupsHeld }))
-      .catch(() => {});
-  }, []);
+      .catch(() => setModeFailed(true));
+  }, [setMode]);
 
   useEffect(() => {
     refreshMode();
@@ -76,9 +81,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </ul>
           </nav>
           <div className="sidebar-foot">
-            {mode && (
+            {mode ? (
               <span className={`mode-chip ${mode.dryRun ? "mode-dry" : "mode-live"}`}>{mode.dryRun ? "Dry run" : "Live sending"}</span>
-            )}
+            ) : modeFailed ? (
+              <span className="mode-chip mode-unknown" title="Could not load the server's sending mode. Treat it as live until the dashboard loads.">
+                Mode unknown
+              </span>
+            ) : null}
             <button type="button" className="btn btn-quiet btn-small" onClick={signOut} disabled={signingOut}>
               Sign out
             </button>

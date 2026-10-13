@@ -1,7 +1,7 @@
 // Typed client for the Express API, reached same-origin through the Next rewrite of /api/*.
 // The session lives in the backend's httpOnly SameSite=Strict cookie; nothing is stored in
 // localStorage. Mutating calls carry X-CSRF-Token (fetched once from /api/auth/csrf, replaced
-// by the rotated token that login/change-password return, refetched once on a 403).
+// by the rotated token that login/change-password return, refetched once on the backend's 403 CSRF refusal).
 import type {
   BatchSummary,
   CancelResult,
@@ -52,6 +52,8 @@ interface RequestOptions {
   form?: FormData;
 }
 
+/** Exact error text of src/auth/middleware.js requireCsrf. */
+const CSRF_ERROR = "Invalid CSRF token";
 const NETWORK_MESSAGE = "Can't reach the server. Check your connection and that the backend is running.";
 
 function redirectToLogin() {
@@ -119,11 +121,14 @@ export function createApi(options: ApiOptions = {}) {
       return send(url, { method, headers, body });
     };
 
-    let res = await attempt(mutating ? await csrfToken() : null);
-    if (res.status === 403 && mutating) {
-      res = await attempt(await csrfToken(true)); // token expired or session rotated: retry once
+    const res0 = await attempt(mutating ? await csrfToken() : null);
+    let res = res0;
+    let data = await readJson(res0);
+    // Retry once, only for the backend's CSRF refusal (token expired or session rotated).
+    if (res0.status === 403 && mutating && (data as { error?: unknown } | null)?.error === CSRF_ERROR) {
+      res = await attempt(await csrfToken(true));
+      data = await readJson(res);
     }
-    const data = await readJson(res);
     if (res.ok) return data as T;
 
     const message = typeof (data as { error?: unknown } | null)?.error === "string" ? (data as { error: string }).error : `Request failed (${res.status})`;
