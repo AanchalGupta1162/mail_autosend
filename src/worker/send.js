@@ -53,7 +53,7 @@ const REASON_TEXT = { not_found: "not found", permission: "access refused", unav
 // library, ENOENT/EACCES for the legacy file): the message is never sent without its resume. The
 // messages never carry keys, paths, bucket names or credentials.
 //   message.resume_id set -> that library resume at the stored generation (dry-run: skipped, no fetch)
-//   otherwise             -> the legacy RESUME_PATH file, if configured (dry-run: lenient, like the signature)
+//   otherwise             -> the legacy RESUME_PATH file; real mode with neither is a hold (dry-run: lenient, like the signature)
 export async function loadAttachments({ config, message, db, storage, cache, timeoutMs = 30_000 }) {
   if (message.resume_id) {
     if (config.dryRun) return [];
@@ -74,7 +74,11 @@ export async function loadAttachments({ config, message, db, storage, cache, tim
       throw Object.assign(new Error(`${label} could not be fetched (${REASON_TEXT[reason]})`), { code: "ERESUME", reason });
     }
   }
-  if (!config?.resumePath) return [];
+  if (!config?.resumePath) {
+    if (config?.dryRun) return [];
+    // Never a real mail without a resume: scheduled in dry-run, or before the library existed, with no legacy file.
+    throw Object.assign(new Error("no resume selected for this message; choose a resume or set a default in Settings"), { code: "ERESUME", reason: "none" });
+  }
   try {
     const content = readFileSync(config.resumePath);
     const ext = path.extname(config.resumePath).toLowerCase();

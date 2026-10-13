@@ -175,3 +175,15 @@ test("dashboard exposes the effective dry-run mode", async () => {
     await real.close();
   }
 });
+
+test("a resume-scoped hold is shown only while its message is still scheduled (cancelled or sent = banner clears)", async () => {
+  const { contacts } = await seedBatch(t.pool, ["hold@dash.example.com"]);
+  const m = await addMessage(t.pool, contacts[0].id, {});
+  const hold = { at: new Date().toISOString(), code: "ERESUME", scope: "resume", messageId: m.id, message: "x" };
+  await t.pool.query("delete from settings where key='send_hold'");
+  await t.pool.query("insert into settings(key,value) values('send_hold',$1)", [JSON.stringify(hold)]);
+  assert.equal((await c.get("/api/dashboard")).json.sendHold.code, "ERESUME");
+  await t.pool.query("update messages set state='cancelled' where id=$1", [m.id]);
+  assert.equal((await c.get("/api/dashboard")).json.sendHold, null);
+  await t.pool.query("delete from settings where key='send_hold'");
+});

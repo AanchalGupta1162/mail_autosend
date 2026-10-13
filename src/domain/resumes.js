@@ -86,21 +86,35 @@ export async function createResume(pool, storage, { displayName, fileName, buffe
   }
 }
 
+const DEFAULT_LOCK_KEY = 727_003; // serialises changes of the default resume
+
+// Serialisation failures of the one-default rule: retried, and a 409 if they persist (never a 500).
+const retryable = (err) => err?.code === "40P01" || err?.code === "40001" || uniqueViolation(err, "resumes_one_default_idx");
+
 export async function updateResume(pool, id, { displayName, isDefault }) {
-  try {
-    return await inTx(pool, async (db) => {
-      const cur = await db.query("SELECT * FROM resumes WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
-      if (!cur.rowCount) throw new HttpError(404, "Resume not found");
-      if (isDefault === true) await db.query("UPDATE resumes SET is_default = false WHERE is_default AND id <> $1", [id]);
-      const { rows } = await db.query(
-        "UPDATE resumes SET display_name = COALESCE($2, display_name), is_default = COALESCE($3, is_default) WHERE id = $1 RETURNING *",
-        [id, displayName ?? null, isDefault ?? null],
-      );
-      await db.query("INSERT INTO events(type, meta) VALUES ('resume_updated', $1)", [JSON.stringify({ resumeId: id })]);
-      return serializeResume(rows[0]);
-    });
-  } catch (err) {
-    throw uniqueViolation(err, "resumes_live_name_idx") ? DUP() : err;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await inTx(pool, async (db) => {
+        // Taken before any row lock, so two set-default calls on different rows cannot deadlock each other.
+        if (isDefault === true) await db.query("SELECT pg_advisory_xact_lock($1)", [DEFAULT_LOCK_KEY]);
+        const cur = await db.query("SELECT * FROM resumes WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", [id]);
+        if (!cur.rowCount) throw new HttpError(404, "Resume not found");
+        if (isDefault === true) await db.query("UPDATE resumes SET is_default = false WHERE is_default AND id <> $1", [id]);
+        const { rows } = await db.query(
+          "UPDATE resumes SET display_name = COALESCE($2, display_name), is_default = COALESCE($3, is_default) WHERE id = $1 RETURNING *",
+          [id, displayName ?? null, isDefault ?? null],
+        );
+        await db.query("INSERT INTO events(type, meta) VALUES ('resume_updated', $1)", [JSON.stringify({ resumeId: id })]);
+        return serializeResume(rows[0]);
+      });
+    } catch (err) {
+      if (uniqueViolation(err, "resumes_live_name_idx")) throw DUP();
+      if (retryable(err)) {
+        if (attempt < 3) continue;
+        throw new HttpError(409, "The default resume was changed at the same time; try again");
+      }
+      throw err;
+    }
   }
 }
 

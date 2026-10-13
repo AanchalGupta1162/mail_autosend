@@ -17,7 +17,7 @@ npm run web:install          # web/ has its own lockfile
 cp .env.example .env         # then fill it in; see below
 ```
 
-Required in `.env`: `DATABASE_URL` and `SESSION_SECRET` (at least 32 random characters, e.g. `openssl rand -hex 32`). `.env.example` documents every variable the code reads; secrets are blank on purpose and the app refuses to start without them. For real sending (`DRY_RUN=false`) it also requires `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SIGNATURE_PATH` and `RESUME_PATH` pointing at existing files (the signature HTML is appended to every email, the resume is attached to every email). `signature.html` and `attachments/` are git-ignored: keep real files out of git.
+Required in `.env`: `DATABASE_URL` and `SESSION_SECRET` (at least 32 random characters, e.g. `openssl rand -hex 32`). `.env.example` documents every variable the code reads; secrets are blank on purpose and the app refuses to start without them. For real sending (`DRY_RUN=false`) it also requires `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SIGNATURE_PATH` pointing at an existing file (the signature HTML is appended to every email). The resume is no longer an environment file: upload PDFs in **Settings > Resumes**, mark one as the default, and the worker attaches the one each message was scheduled with (see *Resume storage* below). `RESUME_PATH` is an optional legacy fallback for messages scheduled before the library existed; a real send with neither a library resume nor that file is held, never sent without a resume. `signature.html` and `attachments/` are git-ignored: keep real files out of git.
 
 Create the admin login once (applies migrations first; safe to run again, it updates the password and clears any lockout):
 
@@ -60,7 +60,10 @@ npm run e2e:local            # end-to-end walk-through, see below
 - **Headers.** Backend: helmet with a strict CSP, no CORS (same origin only), JSON bodies limited to 100 kB. Frontend: a per-request nonce CSP, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `Strict-Transport-Security` (one year) in production only. The UI renders text only, never user HTML.
 - **Mail safety.** The Message-ID is stored before the SMTP call. Only failures that provably happened before any delivery are retried (up to 3 attempts). Anything ambiguous, and any send in flight for more than 10 minutes, becomes `needs_review` and is never resent automatically. Before each send the worker re-checks the contact (replied, opted out, bounced, suppressed). Suppressed addresses and addresses that replied, opted out or bounced are never sent to.
 - **Resolving `needs_review`.** On the Contacts page choose *It was sent* (after checking your Sent folder), *Send again* (the stored Message-ID is kept so threading and reply detection stay consistent; this does not prevent a duplicate, so if the first email did go out the recipient may get it twice) or *Drop it*. The API is `POST /api/messages/:id/resolve {action: "mark_sent" | "requeue" | "cancel"}`.
-- **Credential or config errors pause sending.** A rejected Gmail app password (EAUTH) or an unreadable signature/resume puts the message back about 15 minutes later without using one of its 3 attempts, never marks the contact failed, and shows a "Sending paused" warning on the Dashboard. It clears itself after the next successful real send. The 3-attempt cap still applies to ordinary transient pre-send failures.
+- **Holds (nothing is sent, no attempt used, contact never marked failed).** Two kinds, both put the message back about 15 minutes later:
+  - *Credential or config holds* (rejected Gmail app password EAUTH, unreadable signature or legacy resume file) pause **all** real sending. The Dashboard shows "Sending paused". The worker retries once about every 15 minutes (it does not retry on every 30-second poll) and the warning clears after the next successful real send. A resume-scoped hold never overwrites one of these while it is active.
+  - *Resume holds* (the message's library resume is missing, deleted from the bucket, unreadable, or there is no resume at all in real mode) affect only that message; other emails keep sending. The Dashboard shows "A message is on hold" until the message is sent, cancelled or rescheduled.
+  The 3-attempt cap still applies to ordinary transient pre-send failures.
 - **Dry run.** A dry-run "send" marks the contact `sent` (and blocks rescheduling it) although nothing was delivered. In real mode a follow-up whose first email was a dry run is skipped (cancelled with an explanatory reason and a `send_skipped` event), never sent.
 - **Replies.** In real mode the reply sweep runs every 10 minutes (and on **Check replies now**). While reply checking is stale (no fully successful sweep in the last hour, real mode, sweep enabled) follow-ups are held; first emails are not. Automatic replies and bounces are not treated as replies. You can also mark a reply or an opt-out by hand.
 
@@ -80,11 +83,21 @@ What was verified locally (Next 16.4.0, with `next start` and with the standalon
 
 A unit test (`test/auth/trustproxy.test.js`) proves the limiter keys on `X-Forwarded-For` only when `TRUST_PROXY` is set.
 
+### Resume storage
+
+PDFs are uploaded in **Settings > Resumes** (PDF only, up to 5 MB) and stored outside the database. Each message pins the resume's storage generation at schedule time, so replacing or renaming a resume never changes mail already scheduled.
+
+- `RESUME_STORAGE=local` (default): files under `RESUME_LOCAL_DIR` (default `./data/resumes`). For development.
+- `RESUME_STORAGE=gcs`: Google Cloud Storage. Set `RESUME_BUCKET` to the bucket name without `gs://` (the real one is `mail-autosender-resumes-codecell`, Mumbai `asia-south1`).
+  - Locally, authenticate with Application Default Credentials: `gcloud auth application-default login`.
+  - On Cloud Run, grant the backend's service account `roles/storage.objectUser` on that bucket only (not project-wide). No key files.
+  - Reads are pinned to the stored object generation. If the bucket has Object Versioning off, an overwritten or deleted object makes the message hold (safe, never sent without its resume); enable versioning or a retention policy if you want old generations to stay readable.
+
 ## Deploy outline (not yet done; design only)
 
 Two images, no secrets baked into either:
 
-- `Dockerfile` (repo root): backend. Multi-stage, runs as the non-root `node` user with `NODE_ENV=production`, `CMD node src/server/server.js`, health check on `/healthz`. All settings come from the environment at run time. Mount `signature.html` and the resume as files (for example Secret Manager secrets mounted as volumes) and point `SIGNATURE_PATH` and `RESUME_PATH` at them.
+- `Dockerfile` (repo root): backend. Multi-stage, runs as the non-root `node` user with `NODE_ENV=production`, `CMD node src/server/server.js`, health check on `/healthz`. All settings come from the environment at run time. Mount `signature.html` as a file (for example a Secret Manager secret mounted as a volume) and point `SIGNATURE_PATH` at it. Resumes live in the storage bucket (`RESUME_STORAGE=gcs`), not in the image.
 - `web/Dockerfile`: frontend, Next.js standalone server on port 3001, non-root. Build with the backend's URL, because it is baked into the `/api/*` rewrite when `next build` runs:
   `docker build -f web/Dockerfile --build-arg BACKEND_URL=https://<backend> web`
 

@@ -238,15 +238,36 @@ test("legacy RESUME_PATH is the fallback when nothing is snapshotted: a real att
   assert.ok(atts[0].content.equals(readFileSync(LEGACY)));
 });
 
-test("a snapshotted library resume wins over the legacy file; no snapshot and no legacy path = no attachment", async () => {
+test("a snapshotted library resume wins over the legacy file", async () => {
   const r = await addResume("Wins", "wins");
   await dueWith(r);
   await tick({ config: { resumePath: LEGACY } });
   assert.ok(attachmentsOf(smtp.state.bodies[0])[0].content.equals(r.buffer));
-  smtp.state.bodies.length = 0;
-  await dueWith(null);
-  await tick();
-  assert.equal(attachmentsOf(smtp.state.bodies[0]).length, 0);
+});
+
+test("I1: a real send with no snapshot and no legacy file is a HOLD: nothing is sent, attempt kept, contact not failed", async () => {
+  const { msg, contact } = await dueWith(null);
+  const out = await tick();
+  assert.equal(out.held, 1);
+  assert.equal(out.sent, 0);
+  assert.equal(smtp.state.dataConnections, 0);
+  const row = await msgRow(msg.id);
+  assert.deepEqual([row.state, row.attempts], ["scheduled", 0]);
+  assert.match(row.error, /resume/i);
+  assert.equal((await contactRow(contact.id)).status, "scheduled");
+  assert.equal((await holdRow()).scope, "resume");
+  // Once a resume is chosen (snapshot set) it goes out, after the hold window.
+  const r = await addResume("Late", "late");
+  await pool.query("update messages set resume_id=$2, resume_generation=$3, scheduled_for = now() - interval '1 minute' where id=$1", [msg.id, r.id, r.generation]);
+  assert.equal((await tick({ now: () => new Date(Date.now() + 1000) })).sent, 1);
+  assert.ok(attachmentsOf(smtp.state.bodies[0])[0].content.equals(r.buffer));
+});
+
+test("I1: dry-run with no resume at all still builds the preview mail", async () => {
+  const { msg } = await dueWith(null);
+  const out = await tick({ config: { dryRun: true }, mailer: (await import("../../src/mailer.js")).createMailer({ dryRun: true }) });
+  assert.equal(out.sent, 1);
+  assert.equal((await msgRow(msg.id)).state, "sent");
 });
 
 test("R1: a missing legacy RESUME_PATH file is a hold (pre-checked), not an ambiguous needs_review; nothing is sent", async () => {
@@ -274,20 +295,20 @@ test("R2: while a systemic hold is younger than 15 minutes the tick claims nothi
   const bad = smtp.transport({ auth: { user: "u", pass: "wrong" } });
   smtp.setMode("reject-auth");
   const t0 = Date.now();
-  const first = await tick({ mailer: bad, now: () => new Date(t0) });
+  const first = await tick({ config: { resumePath: LEGACY }, mailer: bad, now: () => new Date(t0) });
   assert.equal(first.held, 1);
   // Make the message due again right away (as another message would be) and tick repeatedly inside the window.
   await pool.query("update messages set scheduled_for = now() - interval '1 minute'");
   for (const secs of [30, 60, 300, 14 * 60]) {
-    const s = await tick({ mailer: bad, now: () => new Date(t0 + secs * 1000) });
+    const s = await tick({ config: { resumePath: LEGACY }, mailer: bad, now: () => new Date(t0 + secs * 1000) });
     assert.equal(s.claimed, 0, `no claim at +${secs}s`);
     assert.equal(s.paused, true);
   }
-  const later = await tick({ mailer: bad, now: () => new Date(t0 + (HOLD_MINUTES + 1) * 60_000) });
+  const later = await tick({ config: { resumePath: LEGACY }, mailer: bad, now: () => new Date(t0 + (HOLD_MINUTES + 1) * 60_000) });
   assert.equal(later.claimed, 1, "one attempt after the window");
   assert.equal(later.held, 1);
   // The window restarts from the new failure.
-  const again = await tick({ mailer: bad, now: () => new Date(t0 + (HOLD_MINUTES + 2) * 60_000) });
+  const again = await tick({ config: { resumePath: LEGACY }, mailer: bad, now: () => new Date(t0 + (HOLD_MINUTES + 2) * 60_000) });
   assert.equal(again.claimed, 0);
 });
 
@@ -299,7 +320,7 @@ test("R2: the pause never applies in dry-run, and a resume-scoped hold does not 
   assert.equal((await msgRow(dry.msg.id)).state, "sent");
   await pool.query("update settings set value = $1 where key='send_hold'", [JSON.stringify({ at: new Date().toISOString(), code: "ERESUME", scope: "resume", messageId: "x", message: "x" })]);
   await dueWith(null);
-  assert.equal((await tick()).sent, 1);
+  assert.equal((await tick({ config: { resumePath: LEGACY } })).sent, 1);
 });
 
 test("a download that never finishes times out into a hold instead of an in-flight send", async () => {
@@ -310,4 +331,35 @@ test("a download that never finishes times out into a hold instead of an in-flig
   assert.equal(out.held, 1);
   assert.equal(smtp.state.dataConnections, 0);
   assert.deepEqual([(await msgRow(msg.id)).state, (await msgRow(msg.id)).attempts], ["scheduled", 0]);
+});
+
+const systemic = (at) => JSON.stringify({ at: new Date(at).toISOString(), code: "EAUTH", message: "535 bad credentials" });
+
+test("I4: the R2 pause honours a systemic hold that a resume problem would otherwise have masked", async () => {
+  const t0 = Date.now();
+  await pool.query("insert into settings(key, value) values ('send_hold', $1)", [systemic(t0 - 60_000)]);
+  await dueWith(await addResume("Any", "any"));
+  const out = await tick({ now: () => new Date(t0 + 13 * 60_000) });
+  assert.equal(out.paused, true);
+  assert.equal(out.claimed, 0);
+});
+
+test("I4: a resume hold arriving while a systemic hold is active (race) leaves the systemic marker; a stale one is replaced", async () => {
+  const r = await addResume("Gone2", "gone2");
+  const { msg } = await dueWith(r);
+  await unlink(path.join(dir, r.key));
+  const t0 = Date.now();
+  // Simulate the race: the systemic marker is written between the pause check and the failure, by the claim hook.
+  const out = await runTick({
+    pool, mailer: smtp.transport(), config: baseConfig, now: () => new Date(t0), sleep: async () => {}, logger: silent, resumeStorage: storage,
+    onClaimed: async () => { await pool.query("insert into settings(key, value) values ('send_hold', $1) on conflict (key) do update set value = excluded.value", [systemic(t0 - 30_000)]); },
+  });
+  assert.equal(out.held, 1);
+  assert.equal((await holdRow()).code, "EAUTH", "systemic hold survives");
+  assert.equal((await msgRow(msg.id)).state, "scheduled");
+  // A stale systemic hold (older than the window) is replaced by the resume-scoped one.
+  await pool.query("update settings set value = $1 where key = 'send_hold'", [systemic(t0 - (HOLD_MINUTES + 1) * 60_000)]);
+  await pool.query("update messages set scheduled_for = now() - interval '1 minute' where id=$1", [msg.id]);
+  await tick({ now: () => new Date(t0 + 1000) });
+  assert.equal((await holdRow()).scope, "resume");
 });

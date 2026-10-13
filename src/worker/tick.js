@@ -239,9 +239,17 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, resumeFetch
         message: note,
         ...(resumeScope ? { scope: "resume", messageId: message.id } : {}),
       };
+      // A resume-scoped marker never replaces a systemic one that is still inside its window: that would
+      // hide a rejected app password from the R2 pause and the banner.
+      const activeSince = new Date(clock().getTime() - HOLD_MINUTES * 60_000).toISOString();
       await client.query(
-        "INSERT INTO settings(key, value) VALUES ('send_hold', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-        [JSON.stringify(holdInfo)],
+        `INSERT INTO settings(key, value) VALUES ('send_hold', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+          WHERE NOT $2::boolean
+             OR settings.value->>'scope' = 'resume'
+             OR settings.value->>'at' IS NULL
+             OR settings.value->>'at' < $3`,
+        [JSON.stringify(holdInfo), resumeScope, activeSince],
       );
       await client.query("INSERT INTO events(contact_id, type, meta) VALUES ($1, 'send_held', $2)", [
         contact.id,

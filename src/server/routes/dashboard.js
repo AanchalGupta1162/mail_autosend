@@ -39,7 +39,13 @@ export async function loadDashboard(pool, config) {
     ),
     pool.query("SELECT value FROM settings WHERE key = 'sweep_state'"),
     followupSendsAllowed(pool, config, new Date()),
-    pool.query("SELECT value FROM settings WHERE key = 'send_hold'"),
+    // A resume-scoped hold is only relevant while its message is still waiting to be retried.
+    pool.query(
+      `SELECT s.value FROM settings s
+        WHERE s.key = 'send_hold'
+          AND (s.value->>'scope' IS DISTINCT FROM 'resume'
+               OR EXISTS (SELECT 1 FROM messages m WHERE m.id::text = s.value->>'messageId' AND m.state = 'scheduled'))`,
+    ),
   ]);
   const byStatus = { uploaded: 0, scheduled: 0, sent: 0, replied: 0, bounced: 0, opted_out: 0, failed: 0 };
   for (const r of totals.rows) byStatus[r.status] = r.n;
@@ -57,7 +63,8 @@ export async function loadDashboard(pool, config) {
     byCompany: companies.rows,
     sweep: sweepState.rows[0]?.value ?? null,
     followupsHeld: !allowed,
-    // Set while sending is paused by a credentials/config error (EAUTH, unreadable signature/resume).
+    // Set while sending is paused by a credentials/config error (EAUTH, unreadable signature/legacy file), or
+    // (scope "resume") while a message is held because its resume is missing or unreadable.
     sendHold: hold.rows[0]?.value ?? null,
     dryRun: Boolean(config.dryRun),
   };

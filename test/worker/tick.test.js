@@ -26,6 +26,7 @@ beforeEach(async () => {
 const D = 86_400_000;
 const baseConfig = {
   dryRun: false,
+  resumePath: path.resolve("test/fixtures/resume.pdf"), // real sends need a resume (library snapshot or this legacy file)
   dailySendCap: 100,
   maxPerTick: 5,
   sendGapSecondsMin: 15,

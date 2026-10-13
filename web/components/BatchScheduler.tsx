@@ -46,6 +46,9 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
   const [pickedResume, setPickedResume] = useState<string | null>(null);
   const resumeId = pickedResume ?? resumes.find((r) => r.isDefault)?.id ?? "";
   const resumeName = resumes.find((r) => r.id === resumeId)?.displayName;
+  // A contact's own override outranks the picker (same precedence as the server).
+  const attachmentName = (c: { attachment?: { displayName: string; source: string } | null }) =>
+    c.attachment?.source === "contact" ? c.attachment.displayName : (resumeName ?? c.attachment?.displayName);
 
   const plan = planSchedule({ selectedIds: selected, sendAt, staggerMinutes: stagger, overrides, now: now() });
   const errs = plan.ok ? null : plan.errors;
@@ -200,7 +203,7 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                     </td>
                     <td>
                       <div className="cell-subject">{c.preview.subject}</div>
-                      {(resumeName ?? c.attachment?.displayName) && <div className="cell-secondary attachment-line">Attachment: {resumeName ?? c.attachment?.displayName}</div>}
+                      {attachmentName(c) && <div className="cell-secondary attachment-line">Attachment: {attachmentName(c)}</div>}
                       <button
                         type="button"
                         className="btn-link"
@@ -270,10 +273,10 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                               <dt>Subject</dt>
                               <dd>{c.preview.subject}</dd>
                             </div>
-                            {(resumeName ?? c.attachment?.displayName) && (
+                            {attachmentName(c) && (
                               <div>
                                 <dt>Attachment</dt>
-                                <dd>{resumeName ?? c.attachment?.displayName}</dd>
+                                <dd>{attachmentName(c)}</dd>
                               </div>
                             )}
                           </dl>

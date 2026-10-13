@@ -7,6 +7,7 @@ import { eventLabel, formatDateTime, formatShort, percent, plural, statusLabel }
 import type { ContactStatus, Dashboard, SweepResult } from "@/lib/types";
 import { useMode } from "./AppShell";
 import { Postmark } from "./Postmark";
+import { SendHoldBanner } from "./SendHoldBanner";
 
 // Charts are SVG with presentation attributes only (no style attributes: strict CSP).
 const PIPELINE: ContactStatus[] = ["uploaded", "scheduled", "sent", "replied"];
@@ -242,11 +243,7 @@ export function DashboardView() {
         </section>
       </div>
 
-      {data.sendHold && (
-        <p className="callout callout-warning" role="alert">
-          Sending paused: credentials or configuration error ({data.sendHold.code}) since {formatDateTime(data.sendHold.at)}. Check the Gmail app password and the signature and resume files; sending resumes by itself after the next successful send (retried every 15 minutes).
-        </p>
-      )}
+      {data.sendHold && <SendHoldBanner hold={data.sendHold} />}
 
       <section className="panel" id="replies" aria-labelledby="h-replies">
         <div className="panel-head">

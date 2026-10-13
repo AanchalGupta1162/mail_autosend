@@ -163,6 +163,17 @@ describe("BatchScheduler", () => {
     expect(JSON.parse(String(seen.find((c) => c.url.endsWith("/schedule"))!.body))).toMatchObject({ resumeId: "r-2" });
   });
 
+  it("a contact's own resume override wins over the picker in the Attachment line", () => {
+    stubFetch(() => json({}));
+    const resumes = [
+      { id: "r-1", displayName: "General SWE", fileName: "g.pdf", sizeBytes: 1, sha256: "a", isDefault: true, createdAt: "", usage: { pendingMessages: 0, batches: 0, contacts: 0 } },
+    ];
+    const own = { ...contact("c-1", "a@x.com"), attachment: { id: "r-9", displayName: "Special ML", source: "contact" as const } };
+    render(<BatchScheduler upload={upload({ contacts: [own, contact("c-2", "b@x.com")] })} resumes={resumes} />);
+    expect(screen.getAllByText(/Attachment: Special ML/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Attachment: General SWE/).length).toBeGreaterThan(0);
+  });
+
   it("without any library resume there is no picker and no resumeId is sent", async () => {
     const seen = stubFetch(() => json({ messages: [] }, 201));
     render(<BatchScheduler upload={upload()} />);

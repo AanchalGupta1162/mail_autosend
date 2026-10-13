@@ -196,3 +196,15 @@ test("DELETE with only sent history: soft-deleted, the object stays (a later fol
   assert.equal((await t.pool.query("SELECT resume_id FROM batches WHERE id = $1", [batchId])).rows[0].resume_id, null);
   assert.equal((await t.pool.query("SELECT resume_id FROM contacts WHERE id = $1", [contacts[0].id])).rows[0].resume_id, null);
 });
+
+test("concurrent set-default calls on different resumes never 500 and leave exactly one default", async () => {
+  const ids = [];
+  for (const n of ["A", "B", "C"]) ids.push((await ok({ file: pdfBytes(n), displayName: `Conc ${n}` })).id);
+  for (let round = 0; round < 5; round++) {
+    const rs = await Promise.all(ids.flatMap((id) => [id, id]).map((id) => c.raw("PUT", `/api/resumes/${id}`, { body: { isDefault: true } })));
+    for (const r of rs) assert.ok([200, 409].includes(r.status), `status ${r.status}: ${r.text}`);
+    assert.ok(rs.some((r) => r.status === 200));
+    const list = (await c.get("/api/resumes")).json.resumes;
+    assert.equal(list.filter((x) => x.isDefault).length, 1);
+  }
+});
