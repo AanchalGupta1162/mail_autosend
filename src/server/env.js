@@ -21,6 +21,21 @@ const int = (def, min = 0) =>
     .transform((v) => (v === undefined || v === "" ? def : Number(v)))
     .pipe(z.number().int().min(min));
 
+// TRUST_PROXY = number of reverse proxies in front of Express that append to X-Forwarded-For
+// (0/false/empty = none). Express then takes the client address that many hops from the right.
+// "true"/CIDR/names are refused: trusting every entry would let a client choose its own IP.
+const hops = () =>
+  z
+    .string()
+    .optional()
+    .transform((v, ctx) => {
+      const x = (v ?? "").trim().toLowerCase();
+      if (x === "" || x === "0" || x === "false") return 0;
+      if (/^[1-5]$/.test(x)) return Number(x);
+      ctx.addIssue({ code: "custom", message: "must be 0 (off) or the number of proxy hops, 1-5" });
+      return z.NEVER;
+    });
+
 const schema = z
   .object({
     DATABASE_URL: z.string({ error: "DATABASE_URL is required" }).min(1, "DATABASE_URL is required"),
@@ -36,7 +51,7 @@ const schema = z
     REPLY_SWEEP_ENABLED: bool(true),
     SEND_GAP_SECONDS_MIN: int(15, 0),
     SEND_GAP_SECONDS_MAX: int(45, 0),
-    TRUST_PROXY: z.string().optional().transform((v) => v === "1"),
+    TRUST_PROXY: hops(),
     GMAIL_USER: z.string().optional(),
     GMAIL_APP_PASSWORD: z.string().optional(),
     FROM_NAME: z.string().optional(),

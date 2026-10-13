@@ -23,7 +23,7 @@ export function createApp({ pool, config, mailer, checkReply, logger = console, 
   const production = config.nodeEnv === "production";
   const app = express();
   app.disable("x-powered-by");
-  if (config.trustProxy) app.set("trust proxy", 1);
+  if (config.trustProxy) app.set("trust proxy", config.trustProxy); // hop count, see env.js
   app.locals.mailer = mailer;
 
   app.use(

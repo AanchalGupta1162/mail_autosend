@@ -17,7 +17,7 @@ test("applies defaults", () => {
   assert.equal(c.maxPerTick, 5);
   assert.equal(c.sendGapSecondsMin, 15);
   assert.equal(c.sendGapSecondsMax, 45);
-  assert.equal(c.trustProxy, false);
+  assert.equal(c.trustProxy, 0);
   assert.equal(c.nodeEnv, "development");
 });
 
@@ -47,7 +47,7 @@ test("parses overrides and flags", () => {
   });
   assert.equal(c.port, 8080);
   assert.equal(c.dryRun, false);
-  assert.equal(c.trustProxy, true);
+  assert.equal(c.trustProxy, 1);
   assert.equal(c.nodeEnv, "production");
   assert.equal(c.dailySendCap, 20);
   assert.equal(c.gmailUser, "a@gmail.com");
@@ -139,4 +139,15 @@ test("real mode fails fast when SIGNATURE_PATH or RESUME_PATH is missing, unset 
   assert.throws(() => loadServerConfig({ ...real, ...files, SIGNATURE_PATH: "/nonexistent/sig.html" }), (e) => /SIGNATURE_PATH/.test(e.message) && !e.message.includes("/nonexistent"));
   assert.throws(() => loadServerConfig({ ...real, ...files, RESUME_PATH: "/nonexistent/r.pdf" }), /RESUME_PATH/);
   assert.doesNotThrow(() => loadServerConfig({ ...base, SIGNATURE_PATH: "/nonexistent/sig.html" }));
+});
+
+test("TRUST_PROXY is a proxy hop count: 0/false/empty = off, 1..5 = that many hops, anything else is refused", () => {
+  const hops = (v) => loadServerConfig({ ...base, TRUST_PROXY: v }).trustProxy;
+  for (const off of ["", "0", "false"]) assert.equal(hops(off), 0);
+  assert.equal(hops("1"), 1);
+  assert.equal(hops("2"), 2);
+  // "true" would trust every X-Forwarded-For entry, so any client could pick its own IP.
+  for (const bad of ["true", "yes", "-1", "6", "1.5", "abc", "loopback", "10.0.0.0/8"]) {
+    assert.throws(() => hops(bad), /TRUST_PROXY/, bad);
+  }
 });
