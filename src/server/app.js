@@ -59,11 +59,12 @@ export function createApp({ pool, config, mailer, checkReply, resumeStorage, log
     }),
   );
 
-  // Public, no data, no session.
-  app.get("/healthz", (_req, res) => res.json({ ok: true }));
+  // Public, no data, no session. Cloud Run's front end answers 404 for /healthz on the public URL (the probes
+  // use it internally), so /health is the externally reachable alias used by the deploy smoke tests.
+  app.get(["/healthz", "/health"], (_req, res) => res.json({ ok: true }));
 
   // Machine endpoints for Cloud Scheduler: OIDC bearer token only, mounted before session/CSRF so no cookie
-  // is read or created. This is the only prefix besides /healthz that skips the session guards.
+  // is read or created. This is the only prefix besides /healthz and /health that skips the session guards.
   app.use("/internal", internalRouter({ pool, config, mailer, checkReply, logger, verify: internalVerifier, shutdownSignal }));
 
   const PgStore = connectPgSimple(session);
