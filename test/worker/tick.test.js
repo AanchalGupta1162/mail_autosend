@@ -203,7 +203,7 @@ test("(d) retries only when nothing was sent: up to 3 attempts with backoff, the
   assert.equal(row.state, "failed");
   assert.equal(s.failed, 1);
   assert.equal(m.calls.length, 3);
-  // A retry keeps the Message-ID stored on first claim, so a mis-classified "not delivered" would still dedupe.
+  // A retry keeps the Message-ID stored on first claim, so threading and reply matching stay consistent.
   assert.equal(new Set(m.calls.map((x) => x.messageId)).size, 1);
   const c = await contactRow(contact.id);
   assert.equal(c.status, "failed");
@@ -424,6 +424,38 @@ test("a failed follow-up leaves the contact 'sent' and is recorded", async () =>
   await tick({ mailer: m });
   assert.equal((await msgRow(f.id)).state, "failed");
   assert.equal((await contactRow(contact.id)).status, "sent");
+});
+
+test("recording-failure fallback never flips a row that was resolved meanwhile (stale worker, reused Message-ID)", async () => {
+  const { msg } = await dueInitial();
+  // The send succeeds but recording it fails; before the best-effort fallback runs, the operator
+  // has already settled the same row (here: cancelled, same stored Message-ID).
+  const wrapped = {
+    connect: async () => {
+      const client = await pool.connect();
+      const orig = client.query;
+      const q = orig.bind(client);
+      const release = client.release.bind(client);
+      client.release = (err) => {
+        client.query = orig; // never hand a sabotaged client back to the shared pool
+        client.release = release;
+        return release(err);
+      };
+      client.query = (text, ...rest) => {
+        if (typeof text === "string" && text.includes("INSERT INTO events")) return Promise.reject(new Error("boom"));
+        return q(text, ...rest);
+      };
+      return client;
+    },
+    query: async (text, params) => {
+      if (typeof text === "string" && text.startsWith("UPDATE messages SET state = 'sent'")) {
+        await pool.query("UPDATE messages SET state = 'cancelled' WHERE id = $1", [msg.id]);
+      }
+      return pool.query(text, params);
+    },
+  };
+  await runTick({ pool: wrapped, mailer: fakeMailer(), config: baseConfig, now: () => new Date(), sleep: noSleep, logger: silent });
+  assert.equal((await msgRow(msg.id)).state, "cancelled");
 });
 
 test("a tick with nothing due is a no-op summary", async () => {

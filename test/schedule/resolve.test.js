@@ -24,7 +24,7 @@ async function needsReview({ kind = "initial", contact = {} } = {}) {
   const ct = contacts[0];
   const o = { status: kind === "initial" ? "scheduled" : "sent", ...contact };
   await t.pool.query("update contacts set status=$2, followup_requested=$3 where id=$1", [ct.id, o.status, o.followup_requested ?? false]);
-  const m = await addMessage(t.pool, ct.id, { kind, state: "needs_review", messageId: "<orig@mail-autosender.local>", claimedAt: new Date(Date.now() - 3600_000) });
+  const m = await addMessage(t.pool, ct.id, { kind, state: "needs_review", attempts: 3, messageId: "<orig@mail-autosender.local>", claimedAt: new Date(Date.now() - 3600_000) });
   if (kind === "followup") await addMessage(t.pool, ct.id, { kind: "initial", state: "sent", sentAt: new Date(Date.now() - 86400_000), messageId: "<init@x>" });
   return { ct, m };
 }
@@ -82,7 +82,7 @@ test("mark_sent (follow-up): message sent, contact unchanged", async () => {
   assert.equal((await contactRow(ct.id)).status, "sent");
 });
 
-test("requeue: back to scheduled now, same Message-ID kept (a duplicate would dedupe), contact stays scheduled", async () => {
+test("requeue: back to scheduled now, same Message-ID kept for threading/reply detection, attempts reset, contact stays scheduled", async () => {
   const { ct, m } = await needsReview();
   const r = await resolve(m.id, "requeue");
   assert.equal(r.status, 200, r.text);
@@ -90,6 +90,7 @@ test("requeue: back to scheduled now, same Message-ID kept (a duplicate would de
   assert.equal(row.state, "scheduled");
   assert.equal(row.message_id, "<orig@mail-autosender.local>");
   assert.equal(row.error, null);
+  assert.equal(row.attempts, 0, "a requeued message gets a fresh retry budget");
   assert.ok(new Date(row.scheduled_for) <= new Date());
   assert.equal((await contactRow(ct.id)).status, "scheduled");
 });

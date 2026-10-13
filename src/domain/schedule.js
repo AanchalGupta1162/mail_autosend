@@ -197,7 +197,9 @@ export async function cancelMessage(pool, messageId) {
 // A `needs_review` message is one whose delivery is unknown (ambiguous SMTP failure, or a send
 // that was in flight for >10 minutes). The operator checks the Sent folder and decides:
 //   mark_sent  it did go out   -> message sent; initial -> contact sent (+ follow-up if ticked)
-//   requeue    it did not      -> scheduled again now, SAME Message-ID kept so a duplicate would dedupe
+//   requeue    it did not      -> scheduled again now with a fresh retry budget; the stored Message-ID is kept so threading and reply
+//                                detection stay consistent. Duplicate delivery is NOT prevented: if it did go out, the
+//                                recipient may get the email twice
 //   cancel     drop it         -> cancelled; initial -> contact back to uploaded, follow-up -> flag cleared
 export const RESOLVE_ACTIONS = ["mark_sent", "requeue", "cancel"];
 const BLOCKED_CONTACT = new Set(["replied", "opted_out", "bounced", "failed"]);
@@ -233,7 +235,7 @@ export async function resolveMessage(pool, messageId, action, now = new Date()) 
       const sup = await db.query("SELECT 1 FROM suppressions WHERE email = lower($1)", [contact.email]);
       if (sup.rowCount) throw new HttpError(409, "Email is suppressed; the message cannot be sent again");
       updated = (
-        await db.query("UPDATE messages SET state = 'scheduled', scheduled_for = $2, claimed_at = NULL, error = NULL WHERE id = $1 RETURNING *", [messageId, now])
+        await db.query("UPDATE messages SET state = 'scheduled', scheduled_for = $2, claimed_at = NULL, attempts = 0, error = NULL WHERE id = $1 RETURNING *", [messageId, now])
       ).rows[0];
     } else {
       updated = (await db.query("UPDATE messages SET state = 'cancelled' WHERE id = $1 RETURNING *", [messageId])).rows[0];

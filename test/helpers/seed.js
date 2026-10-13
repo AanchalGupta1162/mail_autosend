@@ -27,11 +27,11 @@ export async function seedBatch(pool, emails, { name = "b", overrides = {} } = {
   return { batchId, contacts };
 }
 
-export async function addMessage(pool, contactId, { kind = "initial", state = "scheduled", scheduledFor = new Date(Date.now() - 60_000), messageId = null, sentAt = null, claimedAt = null, dryRun = false } = {}) {
+export async function addMessage(pool, contactId, { kind = "initial", state = "scheduled", scheduledFor = new Date(Date.now() - 60_000), messageId = null, sentAt = null, claimedAt = null, dryRun = false, attempts = 0 } = {}) {
   const { rows } = await pool.query(
-    `INSERT INTO messages(contact_id, kind, state, scheduled_for, message_id, sent_at, claimed_at, dry_run)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [contactId, kind, state, scheduledFor, messageId, sentAt, claimedAt, dryRun],
+    `INSERT INTO messages(contact_id, kind, state, scheduled_for, message_id, sent_at, claimed_at, dry_run, attempts)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [contactId, kind, state, scheduledFor, messageId, sentAt, claimedAt, dryRun, attempts],
   );
   return rows[0];
 }

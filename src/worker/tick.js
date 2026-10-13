@@ -221,9 +221,11 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
     if (begun) await client.query("ROLLBACK").catch(() => {});
     if (sentOk) {
       // The mail went out but we could not record it. Best effort to record it; otherwise the row
-      // stays `sending` and becomes needs_review. It is never re-sent.
+      // stays `sending` and becomes needs_review. It is never re-sent. Only a row still in this
+      // attempt's states may be flipped: with Message-ID reuse, a row since resolved/requeued/
+      // cancelled by the operator must not be forced to sent by a stale worker.
       await pool
-        .query("UPDATE messages SET state = 'sent', sent_at = $2 WHERE id = $1 AND message_id = $3", [claimed.id, clock(), claimed.message_id])
+        .query("UPDATE messages SET state = 'sent', sent_at = $2 WHERE id = $1 AND message_id = $3 AND state IN ('sending', 'needs_review')", [claimed.id, clock(), claimed.message_id])
         .catch(() => {});
       logger.error(`recording a successful send failed: ${err?.name ?? "Error"} ${err?.code ?? ""}`.trim());
       return "sent";
