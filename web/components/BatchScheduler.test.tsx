@@ -53,6 +53,14 @@ describe("BatchScheduler", () => {
     expect(confirm()).toBeEnabled();
   });
 
+  it("explains a past time even before any row is selected", async () => {
+    stubFetch(() => json({}));
+    render(<BatchScheduler upload={upload()} />);
+    await userEvent.click(screen.getByRole("checkbox", { name: /select all/i }));
+    fireEvent.change(sendAtInput(), { target: { value: "2020-01-01T09:00" } });
+    expect(screen.getByText(/must be in the future/i)).toBeInTheDocument();
+  });
+
   it("disables Confirm when nothing is selected", async () => {
     stubFetch(() => json({}));
     render(<BatchScheduler upload={upload()} />);

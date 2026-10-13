@@ -41,6 +41,8 @@ export function FollowupToggle({ contact, onChange, disabled }: Props) {
   };
 
   async function save(next: boolean, delayDays: number) {
+    const before = enabled;
+    setEnabled(next); // optimistic; reverted below if the server refuses
     setBusy(true);
     setError(null);
     try {
@@ -50,6 +52,7 @@ export function FollowupToggle({ contact, onChange, disabled }: Props) {
       setDelay(String(result.contact.followupDelayDays));
       onChange?.(result);
     } catch (err) {
+      setEnabled(before);
       setError(describe(err));
     } finally {
       setBusy(false);

@@ -3,7 +3,7 @@
 import { Fragment, useMemo, useRef, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
-import { planSchedule, toLocalInputValue, MAX_DAYS_AHEAD, MAX_STAGGER_MINUTES } from "@/lib/schedule";
+import { checkSendTime, planSchedule, toLocalInputValue, MAX_DAYS_AHEAD, MAX_STAGGER_MINUTES } from "@/lib/schedule";
 import { buildPreviewRows, initialSelection, selectionState, setAll, toggle } from "@/lib/selection";
 import { formatDateTime, localTimeZone, plural } from "@/lib/format";
 import type { ContactStatus, Refusal, UploadResult } from "@/lib/types";
@@ -45,6 +45,8 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
 
   const plan = planSchedule({ selectedIds: selected, sendAt, staggerMinutes: stagger, overrides, now: now() });
   const errs = plan.ok ? null : plan.errors;
+  // The bulk time is checked as soon as it is typed, even before any row is selected.
+  const sendAtError = sendAt ? (checkSendTime(sendAt, now()).error ?? errs?.sendAt) : undefined;
   const times = plan.ok ? plan.plan.times : {};
   const selState = selectionState(rows, selected);
   const minLocal = toLocalInputValue(new Date(now().getTime() + 60_000));
@@ -308,11 +310,11 @@ export function BatchScheduler({ upload, now = () => new Date() }: Props) {
             min={minLocal}
             max={maxLocal}
             onChange={(e) => setSendAt(e.target.value)}
-            aria-invalid={sendAt && errs?.sendAt ? true : undefined}
+            aria-invalid={sendAtError ? true : undefined}
             aria-describedby="send-at-hint"
           />
           <p className="hint" id="send-at-hint">
-            {sendAt && errs?.sendAt ? <span className="field-error-inline">{errs.sendAt}</span> : `Your time (${localTimeZone()}), up to ${MAX_DAYS_AHEAD} days ahead`}
+            {sendAtError ? <span className="field-error-inline">{sendAtError}</span> : `Your time (${localTimeZone()}), up to ${MAX_DAYS_AHEAD} days ahead`}
           </p>
         </div>
         <div className="field field-narrow">

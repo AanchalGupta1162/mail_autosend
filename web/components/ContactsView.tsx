@@ -28,9 +28,11 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Hide a cancelled send at once, before the list reload replaces this row's data.
+  const [cancelled, setCancelled] = useState<string[]>([]);
 
   const initial = contact.messages.find((m) => m.kind === "initial");
-  const pending = contact.messages.filter((m) => m.state === "scheduled");
+  const pending = contact.messages.filter((m) => m.state === "scheduled" && !cancelled.includes(m.id));
   const canSchedule = (contact.status === "uploaded" || contact.status === "scheduled") && (!initial || initial.state === "scheduled");
   const closed = contact.status === "replied" || contact.status === "opted_out";
 
@@ -109,7 +111,10 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
             </button>
           )}
           {pending.map((m) => (
-            <button key={m.id} type="button" className="btn-link" disabled={busy} onClick={() => run(() => api.cancelMessage(m.id))}>
+            <button key={m.id} type="button" className="btn-link" disabled={busy} onClick={() => run(async () => {
+                await api.cancelMessage(m.id);
+                setCancelled((c) => [...c, m.id]);
+              })}>
               Cancel {m.kind === "followup" ? "follow-up" : "send"}
             </button>
           ))}

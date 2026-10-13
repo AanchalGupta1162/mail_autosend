@@ -23,6 +23,18 @@ describe("FollowupToggle", () => {
     expect(seen[0]!.headers.get("X-CSRF-Token")).toBe("t");
   });
 
+  it("ticks immediately while the save is in flight", async () => {
+    let release!: (r: Response) => void;
+    stubFetch(() => new Promise<Response>((r) => (release = r)));
+    render(<FollowupToggle contact={contact} onChange={vi.fn()} />);
+    const box = screen.getByRole("checkbox");
+    await userEvent.click(box);
+    expect(box).toBeChecked();
+    release(json({ contact: { ...contact, followupRequested: true }, followup: null }));
+    await vi.waitFor(() => expect(box).toBeEnabled());
+    expect(box).toBeChecked();
+  });
+
   it("unticking sends enabled:false", async () => {
     const seen = stubFetch(() => json({ contact: { ...contact, followupRequested: false }, followup: null }));
     render(<FollowupToggle contact={{ ...contact, followupRequested: true }} onChange={vi.fn()} />);

@@ -15,7 +15,8 @@ async function isAuthenticated(request: NextRequest): Promise<boolean> {
       headers: { cookie: request.headers.get("cookie") ?? "", accept: "application/json" },
       cache: "no-store",
       redirect: "manual",
-      signal: AbortSignal.timeout(5000),
+      // Generous: a suspended Neon compute can take a few seconds to wake. Timeout => fail closed.
+      signal: AbortSignal.timeout(10_000),
     });
     return res.status === 200;
   } catch {
