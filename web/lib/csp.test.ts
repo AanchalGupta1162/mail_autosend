@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { buildCsp, SECURITY_HEADERS } from "./csp";
+import { buildCsp, securityHeaders, SECURITY_HEADERS } from "./csp";
 
 const directives = (csp: string) =>
   Object.fromEntries(csp.split(";").map((d) => d.trim()).filter(Boolean).map((d) => {
@@ -34,5 +34,18 @@ describe("buildCsp", () => {
       "Referrer-Policy": "no-referrer",
       "X-Frame-Options": "DENY",
     });
+  });
+});
+
+describe("securityHeaders (HSTS)", () => {
+  it("production adds a one-year HSTS header; development never sends it", () => {
+    expect(securityHeaders("production")["Strict-Transport-Security"]).toBe("max-age=31536000; includeSubDomains");
+    expect("Strict-Transport-Security" in securityHeaders("development")).toBe(false);
+    expect("Strict-Transport-Security" in securityHeaders("test")).toBe(false);
+    expect("Strict-Transport-Security" in securityHeaders(undefined)).toBe(false);
+  });
+  it("always includes the baseline headers", () => {
+    expect(securityHeaders("production")).toMatchObject(SECURITY_HEADERS);
+    expect(securityHeaders("development")).toMatchObject(SECURITY_HEADERS);
   });
 });

@@ -6,7 +6,10 @@ import { proxy } from "./proxy";
 const req = (path: string, cookie?: string) =>
   new NextRequest(new URL(path, "http://localhost:3001"), { headers: cookie ? { cookie } : {} });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("proxy (auth guard + CSP)", () => {
   it("redirects an anonymous visitor to login without calling the backend", async () => {
@@ -61,5 +64,20 @@ describe("proxy (auth guard + CSP)", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
     const res = await proxy(req("/login", "sid=good"));
     expect(res.headers.get("location")).toBe("http://localhost:3001/dashboard");
+  });
+});
+
+describe("proxy HSTS", () => {
+  it("sends Strict-Transport-Security in production, including on the login redirect", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const res = await proxy(req("/contacts"));
+    expect(res.status).toBe(307);
+    expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
+  });
+
+  it("does not send it in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const res = await proxy(req("/contacts"));
+    expect(res.headers.get("strict-transport-security")).toBeNull();
   });
 });

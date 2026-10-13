@@ -2,7 +2,7 @@
 // visitors are redirected before any app page renders (no flash of private UI). The session
 // is checked against the backend's GET /api/auth/me; any failure fails closed.
 import { NextResponse, type NextRequest } from "next/server";
-import { buildCsp, SECURITY_HEADERS } from "./lib/csp";
+import { buildCsp, securityHeaders } from "./lib/csp";
 import { guardRedirect } from "./lib/guard";
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:3000";
@@ -26,7 +26,7 @@ async function isAuthenticated(request: NextRequest): Promise<boolean> {
 
 function harden(res: NextResponse, csp: string) {
   res.headers.set("Content-Security-Policy", csp);
-  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
+  for (const [k, v] of Object.entries(securityHeaders(process.env.NODE_ENV))) res.headers.set(k, v);
   res.headers.set("Cache-Control", "no-store");
   return res;
 }

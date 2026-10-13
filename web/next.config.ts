@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
-import { SECURITY_HEADERS } from "./lib/csp";
+import { securityHeaders } from "./lib/csp";
 
 // Express backend. Read when the server starts (dev) and when building (`next build` bakes
 // rewrites into the routes manifest), so set BACKEND_URL for both.
@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
     return [{ source: "/api/:path*", destination: `${BACKEND_URL}/api/:path*` }];
   },
   async headers() {
-    return [{ source: "/:path*", headers: Object.entries(SECURITY_HEADERS).map(([key, value]) => ({ key, value })) }];
+    return [{ source: "/:path*", headers: Object.entries(securityHeaders(process.env.NODE_ENV)).map(([key, value]) => ({ key, value })) }];
   },
 };
 

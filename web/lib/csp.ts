@@ -29,3 +29,13 @@ export const SECURITY_HEADERS: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 };
+
+/**
+ * SECURITY_HEADERS plus HSTS in production. Never in development: a browser that saw HSTS for
+ * localhost would refuse plain-http dev servers afterwards. Browsers ignore it over plain http.
+ */
+export function securityHeaders(nodeEnv: string | undefined): Record<string, string> {
+  return nodeEnv === "production"
+    ? { ...SECURITY_HEADERS, "Strict-Transport-Security": "max-age=31536000; includeSubDomains" }
+    : { ...SECURITY_HEADERS };
+}
