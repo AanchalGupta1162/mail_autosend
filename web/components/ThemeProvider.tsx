@@ -1,5 +1,6 @@
 "use client";
 
+import { setNonce } from "get-nonce";
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { applyTheme, readPref, resolve, storePref, type ThemePref } from "@/lib/theme";
 
@@ -11,6 +12,13 @@ export const useTheme = () => useContext(ThemeCtx);
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [pref, setPrefState] = useState<ThemePref>("system");
   const [resolved, setResolved] = useState<"light" | "dark">("light");
+
+  useEffect(() => {
+    // Radix's scroll lock injects a <style> element; give it the page's CSP nonce so the
+    // strict style-src does not block it. (The nonce property is readable; the attribute is hidden.)
+    const nonce = document.querySelector<HTMLScriptElement>("script[nonce]")?.nonce;
+    if (nonce) setNonce(nonce);
+  }, []);
 
   useEffect(() => {
     const initial = readPref();

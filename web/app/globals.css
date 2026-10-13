@@ -184,14 +184,6 @@
   }
 }
 
-/* Sonner reads these custom properties; set here (not as a style attribute) for the strict CSP. */
-[data-sonner-toaster] {
-  --normal-bg: var(--popover);
-  --normal-text: var(--popover-foreground);
-  --normal-border: var(--border);
-  --border-radius: var(--radius);
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

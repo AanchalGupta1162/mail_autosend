@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { CalendarClock, ChevronLeft, ChevronRight, Loader2, MoreHorizontal, Paperclip, Search, TriangleAlert, Users } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { api, ApiError } from "@/lib/api";
 import { checkSendTime, toLocalInputValue, MAX_DAYS_AHEAD } from "@/lib/schedule";
 import { formatDateTime, plural, statusLabel } from "@/lib/format";
@@ -441,10 +441,10 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
       )}
 
       <div className="rounded-lg border bg-card" aria-busy={loading}>
-        <Table className="min-w-[60rem]">
+        <Table className="md:min-w-[60rem]">
           <caption className="sr-only">Contacts matching the filters</caption>
           <TableHeader>
-            <TableRow className="hover:bg-transparent">
+            <TableRow className="hover:bg-transparent max-md:hidden">
               <TableHead className="pl-4">Recipient</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Next send</TableHead>
@@ -454,12 +454,12 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
               </TableHead>
             </TableRow>
           </TableHeader>
-          <TableBody>
+          <TableBody className="max-md:block">
             {!data &&
               loading &&
               [0, 1, 2, 3, 4].map((i) => (
                 <TableRow key={i} className="hover:bg-transparent">
-                  <TableCell className="pl-4">
+                  <TableCell className="pl-4 max-md:block">
                     <Skeleton className="h-4 w-40" />
                     <Skeleton className="mt-1.5 h-3 w-52" />
                   </TableCell>
@@ -478,8 +478,8 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
                 </TableRow>
               ))}
             {data?.contacts.map((c) => (
-              <TableRow key={c.id} className="align-top">
-                <TableCell className="max-w-72 pl-4">
+              <TableRow key={c.id} className="relative align-top max-md:block max-md:py-3">
+                <TableCell className="max-w-72 pl-4 max-md:block max-md:max-w-none max-md:py-1 max-md:pr-14">
                   <div className="truncate font-medium">{c.person}</div>
                   <div className="truncate font-mono text-xs text-muted-foreground">{c.email}</div>
                   <div className="truncate text-xs text-muted-foreground">
@@ -496,14 +496,14 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
                     <ResumePick key={`${c.id}:${c.resumeId ?? ""}`} contact={c} resumes={resumes} onDone={reload} />
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell className="max-md:block max-md:px-4 max-md:py-1">
                   <StatusBadge status={c.status} />
                   {c.repliedAt && <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(c.repliedAt)}</div>}
                 </TableCell>
-                <TableCell>
+                <TableCell className="max-md:block max-md:px-4 max-md:py-1">
                   <NextSend contact={c} />
                 </TableCell>
-                <TableCell>
+                <TableCell className="max-md:block max-md:px-4 max-md:py-1">
                   <FollowupToggle
                     key={`${c.id}:${c.followupRequested}:${c.followupDelayDays}`}
                     contact={c}
@@ -511,7 +511,7 @@ export function ContactsView({ initialBatchId, initialStatus }: { initialBatchId
                     onChange={reload}
                   />
                 </TableCell>
-                <TableCell className="pr-4">
+                <TableCell className="pr-4 max-md:absolute max-md:top-2 max-md:right-2 max-md:p-0">
                   <RowActions contact={c} onDone={reload} />
                 </TableCell>
               </TableRow>

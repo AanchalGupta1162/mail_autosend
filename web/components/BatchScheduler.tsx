@@ -206,22 +206,25 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
             </div>
           </div>
 
-          <Table className="min-w-[56rem]">
+          <Table className="md:min-w-[56rem]">
             <caption className="sr-only">Imported contacts. Choose who to schedule, then set a send time below.</caption>
             <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-10 pl-4">
+              <TableRow className="hover:bg-transparent max-md:flex max-md:items-center">
+                <TableHead className="w-10 pl-4 max-md:flex max-md:w-auto max-md:items-center max-md:gap-2.5">
                   <SelectAll state={selState} onChange={(c) => setSelected(setAll(rows, c))} />
+                  <span className="text-xs font-medium md:hidden" aria-hidden="true">
+                    Select all
+                  </span>
                 </TableHead>
-                <TableHead className="w-12">Row</TableHead>
-                <TableHead>Recipient</TableHead>
-                <TableHead>Subject</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Follow-up</TableHead>
-                <TableHead className="pr-4">Send time</TableHead>
+                <TableHead className="w-12 max-md:hidden">Row</TableHead>
+                <TableHead className="max-md:hidden">Recipient</TableHead>
+                <TableHead className="max-md:hidden">Subject</TableHead>
+                <TableHead className="max-md:hidden">Status</TableHead>
+                <TableHead className="max-md:hidden">Follow-up</TableHead>
+                <TableHead className="pr-4 max-md:hidden">Send time</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody className="max-md:block">
               {rows.map((r) => {
                 const c = r.contact;
                 const isSel = selected.includes(c.id);
@@ -231,8 +234,8 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                 const ownErr = errs?.overrides[c.id];
                 return (
                   <Fragment key={c.id}>
-                    <TableRow data-state={isSel ? "selected" : undefined} className={cn("align-top", isOpen && "border-b-0")}>
-                      <TableCell className="pl-4">
+                    <TableRow data-state={isSel ? "selected" : undefined} className={cn("relative align-top max-md:block max-md:py-3 max-md:pl-10", isOpen && "border-b-0")}>
+                      <TableCell className="pl-4 max-md:absolute max-md:top-3.5 max-md:left-0 max-md:p-0 max-md:pl-4">
                         <Checkbox
                           aria-label={`Select ${c.email}`}
                           checked={isSel}
@@ -240,8 +243,8 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                           onCheckedChange={() => setSelected((s) => toggle(rows, s, c.id))}
                         />
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">{r.row}</TableCell>
-                      <TableCell className="max-w-64">
+                      <TableCell className="font-mono text-xs text-muted-foreground max-md:hidden">{r.row}</TableCell>
+                      <TableCell className="max-w-64 max-md:block max-md:max-w-none max-md:px-4 max-md:py-1">
                         <div className="truncate font-medium">{c.person}</div>
                         <div className="truncate font-mono text-xs text-muted-foreground">{c.email}</div>
                         <div className="truncate text-xs text-muted-foreground">
@@ -253,7 +256,7 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="max-w-72">
+                      <TableCell className="max-w-72 max-md:block max-md:max-w-none max-md:px-4 max-md:py-1">
                         <div className="truncate">{c.preview.subject}</div>
                         {attachmentName(c) && (
                           <div className="mt-0.5 flex items-center gap-1 truncate text-xs text-muted-foreground">
@@ -272,13 +275,13 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                           {isOpen ? "Hide email" : "Preview email"}
                         </TextButton>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="max-md:block max-md:px-4 max-md:py-1">
                         <StatusBadge status={st} />
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="max-md:block max-md:px-4 max-md:py-1">
                         <FollowupToggle contact={c} disabled={r.blocked} />
                       </TableCell>
-                      <TableCell className="pr-4">
+                      <TableCell className="pr-4 max-md:block max-md:px-4 max-md:py-1">
                         {scheduledAt[c.id] ? (
                           <Postmark at={scheduledAt[c.id]!} label="Scheduled" />
                         ) : own ? (
@@ -319,8 +322,8 @@ export function BatchScheduler({ upload, resumes = [], now = () => new Date() }:
                       </TableCell>
                     </TableRow>
                     {isOpen && (
-                      <TableRow className="bg-muted/30 hover:bg-muted/30" id={`pv-${c.id}`}>
-                        <TableCell colSpan={7} className="px-4 pt-0 pb-4">
+                      <TableRow className="bg-muted/30 hover:bg-muted/30 max-md:block" id={`pv-${c.id}`}>
+                        <TableCell colSpan={7} className="px-4 pt-0 pb-4 max-md:block max-md:pt-3">
                           <EmailLetter label={`Email to ${c.email}`} to={c.email} subject={c.preview.subject} attachment={attachmentName(c)} body={c.preview.text} />
                         </TableCell>
                       </TableRow>
