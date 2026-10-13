@@ -5,6 +5,7 @@ import { z } from "zod";
 import { HttpError } from "../errors.js";
 import { parseCsv, CsvFileError } from "../../import/parseCsv.js";
 import { renderInitialPreview } from "../../domain/render.js";
+import { describeAttachments } from "../../domain/resumes.js";
 import { inTx, serializeBatch, serializeContact } from "../../domain/contacts.js";
 
 const MAX_UPLOAD_BYTES = 1024 * 1024;
@@ -67,7 +68,7 @@ function loadSignature(config) {
 export function batchesRouter({ pool, config }) {
   const router = Router();
   const signatureHtml = loadSignature(config);
-  const withPreview = (row) => ({ ...serializeContact(row), preview: renderInitialPreview({ subject: row.subject, mailText: row.mail_text }, signatureHtml) });
+  const withPreview = (row, attachment = null) => ({ ...serializeContact(row), attachment, preview: renderInitialPreview({ subject: row.subject, mailText: row.mail_text }, signatureHtml) });
 
   router.post("/", receiveUpload, async (req, res, next) => {
     try {
@@ -127,10 +128,11 @@ export function batchesRouter({ pool, config }) {
         ]);
         return { batch, contacts: inserted.rows };
       });
+      const attachments = await describeAttachments(pool, result.contacts.map((c) => c.id), config);
       res.status(201).json({
         batch: serializeBatch(result.batch),
         // `row` = the contact's line in the uploaded file (emails are unique per batch).
-        contacts: result.contacts.map((c) => ({ ...withPreview(c), row: rowByEmail.get(c.email.toLowerCase()) ?? null })),
+        contacts: result.contacts.map((c) => ({ ...withPreview(c, attachments.get(c.id) ?? null), row: rowByEmail.get(c.email.toLowerCase()) ?? null })),
         errors,
         warnings,
       });
@@ -163,7 +165,8 @@ export function batchesRouter({ pool, config }) {
       const b = await pool.query("SELECT * FROM batches WHERE id = $1", [id.data]);
       if (!b.rowCount) throw new HttpError(404, "Batch not found");
       const c = await pool.query("SELECT * FROM contacts WHERE batch_id = $1 ORDER BY created_at, id", [id.data]);
-      res.json({ batch: serializeBatch(b.rows[0]), contacts: c.rows.map(withPreview) });
+      const attachments = await describeAttachments(pool, c.rows.map((r) => r.id), config);
+      res.json({ batch: serializeBatch(b.rows[0]), contacts: c.rows.map((r) => withPreview(r, attachments.get(r.id) ?? null)) });
     } catch (err) {
       next(err);
     }

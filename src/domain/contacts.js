@@ -16,6 +16,7 @@ export function serializeContact(r) {
     status: r.status,
     followupRequested: r.followup_requested,
     followupDelayDays: r.followup_delay_days,
+    resumeId: r.resume_id ?? null,
     repliedAt: r.replied_at,
     error: r.error,
     createdAt: r.created_at,
@@ -23,7 +24,7 @@ export function serializeContact(r) {
 }
 
 export function serializeBatch(r) {
-  return { id: r.id, name: r.name, originalFilename: r.original_filename, createdAt: r.created_at };
+  return { id: r.id, name: r.name, originalFilename: r.original_filename, resumeId: r.resume_id ?? null, createdAt: r.created_at };
 }
 
 async function inTx(pool, fn) {

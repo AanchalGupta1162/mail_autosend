@@ -112,8 +112,8 @@ export function createApp({ pool, config, mailer, checkReply, resumeStorage, log
   app.use("/api/auth", authRouter({ pool }));
   app.use("/api/resumes", resumesRouter({ pool, storage: resumeStorage ?? createResumeStorage(config) }));
   app.use("/api/batches", batchesRouter({ pool, config }));
-  app.use("/api/contacts", contactsRouter({ pool }));
-  app.use("/api", schedulingRouter({ pool }));
+  app.use("/api/contacts", contactsRouter({ pool, config }));
+  app.use("/api", schedulingRouter({ pool, config }));
   app.use("/api", dashboardRouter({ pool, config, checkReply, logger }));
   app.use("/api", notFound);
 

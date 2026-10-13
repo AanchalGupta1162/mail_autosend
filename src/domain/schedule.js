@@ -1,5 +1,6 @@
 import { HttpError } from "../server/errors.js";
 import { inTx, serializeContact } from "./contacts.js";
+import { assertLiveResume, noResumeError, resolveResume } from "./resumes.js";
 
 export const MAX_DAYS_AHEAD = 90;
 const DAY_MS = 86_400_000;
@@ -16,6 +17,7 @@ export function serializeMessage(r) {
     attempts: r.attempts,
     error: r.error,
     dryRun: r.dry_run,
+    resumeId: r.resume_id ?? null,
     createdAt: r.created_at,
   };
 }
@@ -89,7 +91,9 @@ function mapUnique(err) {
 
 // All-or-nothing: if any contact is refused, nothing is scheduled and the 409 body names every
 // refused contact with a reason.
-export async function scheduleBulk(pool, { batchId, contactIds, sendAt, staggerMinutes = 0 }) {
+// `resumeId`: undefined = leave the batch choice alone, null = clear it, uuid = set it. `requireResume`: refuse when
+// a contact would go out with no resume at all (real mode without a legacy RESUME_PATH).
+export async function scheduleBulk(pool, { batchId, contactIds, sendAt, staggerMinutes = 0, resumeId, requireResume = false }) {
   const b = await pool.query("SELECT id FROM batches WHERE id = $1", [batchId]);
   if (!b.rowCount) throw new HttpError(404, "Batch not found");
   const times = planStagger(sendAt, contactIds.length, staggerMinutes);
@@ -108,11 +112,17 @@ export async function scheduleBulk(pool, { batchId, contactIds, sendAt, staggerM
         if (reason) refused.push(refusal(row, reason));
       }
       if (refused.length) throw new RefusedError(refused);
+      if (resumeId !== undefined) {
+        if (resumeId) await assertLiveResume(db, resumeId);
+        await db.query("UPDATE batches SET resume_id = $2 WHERE id = $1", [batchId, resumeId]);
+      }
       const out = [];
       for (const [i, id] of contactIds.entries()) {
+        const resume = await resolveResume(db, id);
+        if (!resume && requireResume) throw noResumeError();
         const m = await db.query(
-          `INSERT INTO messages(contact_id, kind, state, scheduled_for) VALUES ($1, 'initial', 'scheduled', $2) RETURNING *`,
-          [id, times[i]],
+          `INSERT INTO messages(contact_id, kind, state, scheduled_for, resume_id, resume_generation) VALUES ($1, 'initial', 'scheduled', $2, $3, $4) RETURNING *`,
+          [id, times[i], resume?.id ?? null, resume?.generation ?? null],
         );
         await db.query("UPDATE contacts SET status = 'scheduled' WHERE id = $1", [id]);
         await db.query("INSERT INTO events(contact_id, type, meta) VALUES ($1, 'scheduled', $2)", [
@@ -129,7 +139,8 @@ export async function scheduleBulk(pool, { batchId, contactIds, sendAt, staggerM
 }
 
 // Schedule, or reschedule an unsent initial, for one contact.
-export async function scheduleContact(pool, contactId, sendAt) {
+// `resumeId` (undefined = keep what is snapshotted; null/uuid = set the contact's override and re-snapshot).
+export async function scheduleContact(pool, contactId, sendAt, { resumeId, requireResume = false } = {}) {
   try {
     return await inTx(pool, async (db) => {
       const rows = await lockContactsForScheduling(db, [contactId]);
@@ -141,16 +152,30 @@ export async function scheduleContact(pool, contactId, sendAt) {
         "SELECT * FROM messages WHERE contact_id = $1 AND kind = 'initial' AND state <> 'cancelled' FOR UPDATE",
         [contactId],
       );
+      if (resumeId !== undefined) {
+        if (resumeId) await assertLiveResume(db, resumeId);
+        await db.query("UPDATE contacts SET resume_id = $2 WHERE id = $1", [contactId, resumeId]);
+      }
       let msg;
       if (!live.rowCount) {
+        const resume = await resolveResume(db, contactId);
+        if (!resume && requireResume) throw noResumeError();
         msg = (
           await db.query(
-            `INSERT INTO messages(contact_id, kind, state, scheduled_for) VALUES ($1, 'initial', 'scheduled', $2) RETURNING *`,
-            [contactId, sendAt],
+            `INSERT INTO messages(contact_id, kind, state, scheduled_for, resume_id, resume_generation) VALUES ($1, 'initial', 'scheduled', $2, $3, $4) RETURNING *`,
+            [contactId, sendAt, resume?.id ?? null, resume?.generation ?? null],
           )
         ).rows[0];
       } else if (live.rows[0].state === "scheduled") {
-        msg = (await db.query("UPDATE messages SET scheduled_for = $2 WHERE id = $1 RETURNING *", [live.rows[0].id, sendAt])).rows[0];
+        if (resumeId !== undefined) {
+          const resume = await resolveResume(db, contactId);
+          if (!resume && requireResume) throw noResumeError();
+          msg = (
+            await db.query("UPDATE messages SET scheduled_for = $2, resume_id = $3, resume_generation = $4 WHERE id = $1 RETURNING *", [live.rows[0].id, sendAt, resume?.id ?? null, resume?.generation ?? null])
+          ).rows[0];
+        } else {
+          msg = (await db.query("UPDATE messages SET scheduled_for = $2 WHERE id = $1 RETURNING *", [live.rows[0].id, sendAt])).rows[0];
+        }
       } else {
         throw new HttpError(409, `Message is already ${live.rows[0].state} and cannot be rescheduled`);
       }
@@ -222,12 +247,12 @@ export async function resolveMessage(pool, messageId, action, now = new Date()) 
       if (msg.kind === "initial") {
         await db.query("UPDATE contacts SET status = 'sent', error = NULL WHERE id = $1 AND status = 'scheduled'", [contactId]);
         await db.query(
-          `INSERT INTO messages(contact_id, kind, state, scheduled_for)
-           SELECT c.id, 'followup', 'scheduled', $2 FROM contacts c
+          `INSERT INTO messages(contact_id, kind, state, scheduled_for, resume_id, resume_generation)
+           SELECT c.id, 'followup', 'scheduled', $2, $3, $4 FROM contacts c
             WHERE c.id = $1 AND c.followup_requested AND c.status = 'sent'
               AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.email = lower(c.email))
            ON CONFLICT (contact_id, kind) WHERE state <> 'cancelled' DO NOTHING`,
-          [contactId, followupDueAt(now, contact.followup_delay_days)],
+          [contactId, followupDueAt(now, contact.followup_delay_days), msg.resume_id, msg.resume_generation],
         );
       }
     } else if (action === "requeue") {
@@ -289,7 +314,7 @@ export async function syncFollowup(pool, contactId, { enabled, delayDays }) {
       } else {
         if (row.status === "sent") {
           const init = await db.query(
-            "SELECT sent_at FROM messages WHERE contact_id = $1 AND kind = 'initial' AND state = 'sent' ORDER BY sent_at DESC LIMIT 1",
+            "SELECT sent_at, resume_id, resume_generation FROM messages WHERE contact_id = $1 AND kind = 'initial' AND state = 'sent' ORDER BY sent_at DESC LIMIT 1",
             [contactId],
           );
           if (init.rowCount) {
@@ -297,8 +322,8 @@ export async function syncFollowup(pool, contactId, { enabled, delayDays }) {
             if (!live.rowCount) {
               followup = (
                 await db.query(
-                  "INSERT INTO messages(contact_id, kind, state, scheduled_for) VALUES ($1, 'followup', 'scheduled', $2) RETURNING *",
-                  [contactId, due],
+                  "INSERT INTO messages(contact_id, kind, state, scheduled_for, resume_id, resume_generation) VALUES ($1, 'followup', 'scheduled', $2, $3, $4) RETURNING *",
+                  [contactId, due, init.rows[0].resume_id, init.rows[0].resume_generation],
                 )
               ).rows[0];
             } else if (live.rows[0].state === "scheduled") {

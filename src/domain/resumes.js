@@ -1,3 +1,4 @@
+import path from "node:path";
 import { HttpError } from "../server/errors.js";
 import { inTx } from "./contacts.js";
 
@@ -123,4 +124,87 @@ export async function deleteResume(pool, storage, id) {
     return { key: cur.rows[0].storage_key, removable: refs.rows[0].n === 0 };
   });
   if (removable) await storage.delete(key).catch(() => {});
+}
+
+// --- choosing which resume goes out ------------------------------------------------------------------
+// Resolution at SCHEDULE time: contact override -> batch choice -> default resume -> nothing (the legacy
+// RESUME_PATH file is the worker's last fallback). Soft-deleted resumes are skipped. The chosen row is
+// locked FOR SHARE so a concurrent delete (FOR UPDATE) cannot slip between choosing and snapshotting.
+export async function resolveResume(db, contactId) {
+  const { rows } = await db.query(
+    `SELECT r.id, r.generation FROM resumes r
+      WHERE r.deleted_at IS NULL AND r.id = COALESCE(
+        (SELECT r1.id FROM contacts c JOIN resumes r1 ON r1.id = c.resume_id AND r1.deleted_at IS NULL WHERE c.id = $1),
+        (SELECT r2.id FROM contacts c JOIN batches b ON b.id = c.batch_id JOIN resumes r2 ON r2.id = b.resume_id AND r2.deleted_at IS NULL WHERE c.id = $1),
+        (SELECT r3.id FROM resumes r3 WHERE r3.is_default AND r3.deleted_at IS NULL))
+      FOR SHARE OF r`,
+    [contactId],
+  );
+  return rows[0] ?? null;
+}
+
+// A resumeId sent by the client must name an existing, non-deleted resume.
+export async function assertLiveResume(db, resumeId) {
+  const { rowCount } = await db.query("SELECT 1 FROM resumes WHERE id = $1 AND deleted_at IS NULL FOR SHARE", [resumeId]);
+  if (!rowCount) throw new HttpError(400, "Unknown resume: pick a resume from the library");
+}
+
+export const noResumeError = () =>
+  new HttpError(409, "No resume selected: upload a resume in Settings (and make it the default) or pick one, then schedule again");
+
+// What each contact would attach, for the UI. A live initial message is authoritative (its snapshot);
+// otherwise the same resolution as scheduling. `config.resumePath` is the legacy fallback.
+export async function describeAttachments(db, contactIds, config = {}) {
+  if (!contactIds.length) return new Map();
+  const { rows } = await db.query(
+    `SELECT c.id AS contact_id,
+            m.id AS message_id, rm.id AS snap_id, rm.display_name AS snap_name,
+            rc.id AS c_id, rc.display_name AS c_name,
+            rb.id AS b_id, rb.display_name AS b_name,
+            rd.id AS d_id, rd.display_name AS d_name
+       FROM contacts c
+       JOIN batches b ON b.id = c.batch_id
+       LEFT JOIN LATERAL (SELECT id, resume_id FROM messages WHERE contact_id = c.id AND kind = 'initial' AND state <> 'cancelled' LIMIT 1) m ON true
+       LEFT JOIN resumes rm ON rm.id = m.resume_id
+       LEFT JOIN resumes rc ON rc.id = c.resume_id AND rc.deleted_at IS NULL
+       LEFT JOIN resumes rb ON rb.id = b.resume_id AND rb.deleted_at IS NULL
+       LEFT JOIN resumes rd ON rd.is_default AND rd.deleted_at IS NULL
+      WHERE c.id = ANY($1::uuid[])`,
+    [contactIds],
+  );
+  const legacy = config.resumePath ? { id: null, displayName: path.basename(config.resumePath), source: "legacy" } : null;
+  const out = new Map();
+  for (const r of rows) {
+    let a;
+    if (r.message_id) a = r.snap_id ? { id: r.snap_id, displayName: r.snap_name, source: "scheduled" } : legacy;
+    else if (r.c_id) a = { id: r.c_id, displayName: r.c_name, source: "contact" };
+    else if (r.b_id) a = { id: r.b_id, displayName: r.b_name, source: "batch" };
+    else if (r.d_id) a = { id: r.d_id, displayName: r.d_name, source: "default" };
+    else a = legacy;
+    out.set(r.contact_id, a);
+  }
+  return out;
+}
+
+// PUT /contacts/:id/resume: the per-contact override. A still-scheduled initial is re-snapshotted.
+export async function setContactResume(pool, contactId, resumeId, { requireResume = false } = {}) {
+  return inTx(pool, async (db) => {
+    const cur = await db.query("SELECT * FROM contacts WHERE id = $1 FOR UPDATE", [contactId]);
+    if (!cur.rowCount) throw new HttpError(404, "Contact not found");
+    if (!["uploaded", "scheduled"].includes(cur.rows[0].status)) {
+      throw new HttpError(409, `Contact is ${cur.rows[0].status}; its resume can no longer be changed`);
+    }
+    const live = await db.query("SELECT * FROM messages WHERE contact_id = $1 AND kind = 'initial' AND state <> 'cancelled' FOR UPDATE", [contactId]);
+    if (live.rowCount && live.rows[0].state !== "scheduled") {
+      throw new HttpError(409, `Message is already ${live.rows[0].state}; its resume can no longer be changed`);
+    }
+    if (resumeId) await assertLiveResume(db, resumeId);
+    const upd = await db.query("UPDATE contacts SET resume_id = $2 WHERE id = $1 RETURNING *", [contactId, resumeId]);
+    if (live.rowCount) {
+      const resume = await resolveResume(db, contactId);
+      if (!resume && requireResume) throw noResumeError();
+      await db.query("UPDATE messages SET resume_id = $2, resume_generation = $3 WHERE id = $1", [live.rows[0].id, resume?.id ?? null, resume?.generation ?? null]);
+    }
+    return upd.rows[0];
+  });
 }

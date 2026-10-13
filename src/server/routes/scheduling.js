@@ -2,6 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { HttpError } from "../errors.js";
 import { cancelMessage, resolveMessage, RESOLVE_ACTIONS, scheduleBulk, scheduleContact, syncFollowup, validateSendAt, planStagger, MAX_DAYS_AHEAD } from "../../domain/schedule.js";
+import { setContactResume } from "../../domain/resumes.js";
+import { serializeContact } from "../../domain/contacts.js";
 import { getTemplate, putTemplate, templateSchema } from "../../domain/template.js";
 
 // Normalised to lower case so the same id in two spellings is recognised as a duplicate.
@@ -12,9 +14,11 @@ const bulkBody = z.strictObject({
   contactIds: z.array(uuid).min(1).max(500),
   sendAt: z.string(),
   staggerMinutes: z.number().int().min(0).max(MAX_STAGGER_MINUTES).optional(),
+  resumeId: uuid.nullable().optional(),
 });
 const resolveBody = z.strictObject({ action: z.enum(RESOLVE_ACTIONS) });
-const oneBody = z.strictObject({ sendAt: z.string() });
+const oneBody = z.strictObject({ sendAt: z.string(), resumeId: uuid.nullable().optional() });
+const resumeBody = z.strictObject({ resumeId: uuid.nullable() });
 const followupBody = z.strictObject({
   enabled: z.boolean(),
   delayDays: z.number().int().min(1).max(60).optional(),
@@ -32,8 +36,10 @@ const body = (schema, req) => {
 };
 
 // Mounted at /api. Handles only its own paths; everything else falls through.
-export function schedulingRouter({ pool, now = () => new Date() }) {
+export function schedulingRouter({ pool, config = {}, now = () => new Date() }) {
   const router = Router();
+  // Real mode with no legacy RESUME_PATH: a mail must never go out because nobody picked a resume.
+  const requireResume = !config.dryRun && !config.resumePath;
   const wrap = (fn) => async (req, res, next) => {
     try {
       await fn(req, res);
@@ -52,7 +58,7 @@ export function schedulingRouter({ pool, now = () => new Date() }) {
     if (last.getTime() > now().getTime() + MAX_DAYS_AHEAD * 86_400_000) {
       throw new HttpError(400, `Staggered times must all be within ${MAX_DAYS_AHEAD} days`);
     }
-    const messages = await scheduleBulk(pool, { batchId, contactIds: b.contactIds, sendAt, staggerMinutes: stagger });
+    const messages = await scheduleBulk(pool, { batchId, contactIds: b.contactIds, sendAt, staggerMinutes: stagger, resumeId: b.resumeId, requireResume });
     res.status(201).json({ messages });
   }));
 
@@ -60,7 +66,13 @@ export function schedulingRouter({ pool, now = () => new Date() }) {
     const id = param(req, "contact");
     const b = body(oneBody, req);
     const sendAt = validateSendAt(b.sendAt, now());
-    res.json({ message: await scheduleContact(pool, id, sendAt) });
+    res.json({ message: await scheduleContact(pool, id, sendAt, { resumeId: b.resumeId, requireResume }) });
+  }));
+
+  router.put("/contacts/:id/resume", wrap(async (req, res) => {
+    const id = param(req, "contact");
+    const b = body(resumeBody, req);
+    res.json({ contact: serializeContact(await setContactResume(pool, id, b.resumeId, { requireResume })) });
   }));
 
   router.put("/contacts/:id/followup", wrap(async (req, res) => {

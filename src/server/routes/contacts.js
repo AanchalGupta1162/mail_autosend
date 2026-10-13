@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { HttpError } from "../errors.js";
+import { describeAttachments } from "../../domain/resumes.js";
 import { CONTACT_STATUSES, markReplied, optOut, serializeContact } from "../../domain/contacts.js";
 
 const uuid = z.uuid();
@@ -15,7 +16,7 @@ const listQuery = z.strictObject({
 
 const escapeLike = (s) => s.replace(/[\\%_]/g, (m) => `\\${m}`);
 
-export function contactsRouter({ pool }) {
+export function contactsRouter({ pool, config = {} }) {
   const router = Router();
 
   router.get("/", async (req, res, next) => {
@@ -52,8 +53,9 @@ export function contactsRouter({ pool }) {
         list.push({ id: m.id, kind: m.kind, state: m.state, scheduledFor: m.scheduled_for, sentAt: m.sent_at });
         byContact.set(m.contact_id, list);
       }
+      const attachments = await describeAttachments(pool, rows.map((r) => r.id), config);
       res.json({
-        contacts: rows.map((r) => ({ ...serializeContact(r), messages: byContact.get(r.id) ?? [] })),
+        contacts: rows.map((r) => ({ ...serializeContact(r), attachment: attachments.get(r.id) ?? null, messages: byContact.get(r.id) ?? [] })),
         total: total.rows[0].n,
         page,
         pageSize,
