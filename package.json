@@ -3,15 +3,32 @@
   "version": "1.0.0",
   "description": "Sends personalized recruiter emails from an Excel sheet, paced over a time window.",
   "type": "module",
-  "main": "src/index.js",
+  "main": "src/server/server.js",
   "scripts": {
-    "start": "node --env-file=.env src/index.js",
-    "sample-sheet": "node scripts/createSampleSheet.js",
-    "test": "node --test test/*.test.js"
+    "start": "node --env-file=.env src/server/server.js",
+    "migrate": "node --env-file=.env src/db/migrate.js",
+    "e2e:local": "node --env-file=.env scripts/e2e-local.js",
+    "seed:admin": "node --env-file=.env scripts/seedAdmin.js",
+    "test": "node --env-file=.env --test \"test/**/*.test.js\"",
+    "web:install": "npm --prefix web ci",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:start": "npm --prefix web run start",
+    "web:test": "npm --prefix web test",
+    "web:lint": "npm --prefix web run lint"
   },
   "dependencies": {
-    "exceljs": "^4.4.0",
+    "@google-cloud/storage": "^8.4.0",
+    "connect-pg-simple": "^10.0.0",
+    "express": "^4.22.3",
+    "express-rate-limit": "^8.7.1",
+    "express-session": "^1.19.0",
+    "google-auth-library": "11.3.0",
+    "helmet": "^8.3.0",
     "imapflow": "^1.0.167",
-    "nodemailer": "^6.9.15"
+    "multer": "^2.4.0",
+    "nodemailer": "^10.1.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.6"
   }
 }

@@ -1,0 +1,299 @@
+name: Deploy
+
+# Push to main: CI must pass, then (after the `production` environment approval, if configured) images are built, the
+# migrate job runs, each service gets a no-traffic revision that is smoke tested before taking traffic, and any failure
+# after traffic moved rolls back automatically.
+# Manual run with `sha`: redeploy (or roll back to) an already-built commit without rebuilding.
+#
+# Guards:
+#  * Docs-only pushes (docs/**, *.md) do not deploy.
+#  * No deploy while the send window is open (08:55-10:15 Asia/Kolkata) unless a manual run sets force=true: shifting traffic
+#    retires the old revision, and Cloud Run only gives it SIGTERM plus about 10 s, so a send in flight (up to 90 s) would be
+#    killed mid-SMTP and left for needs_review recovery (a possible duplicate or a manual-review item). The check runs at the
+#    start and again right before traffic moves (builds and environment approval can take a long time).
+#  * Every required secret must have a real version (version 1 is the throwaway placeholder).
+#
+# Concurrency: a run waiting for `production` environment approval occupies the group, so an urgent manual rollback queues
+# behind it. Reject (or cancel) the pending run first, or roll back from a terminal (docs/deploy.md section 3).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA whose images are already in Artifact Registry (rollback / redeploy). Empty = build and deploy this commit."
+        required: false
+        type: string
+      force:
+        description: "Deploy even while the send window (08:55-10:15 IST) is open. Emergency rollbacks only: an in-flight send can be killed."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: [ci]
+    # Run after a green CI on push, or directly on a manual dispatch (CI is skipped there).
+    if: ${{ !cancelled() && (needs.ci.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.ci.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT: ${{ vars.GCP_PROJECT }}
+      REGION: ${{ vars.GCP_REGION }}
+      INPUT_SHA: ${{ inputs.sha }}
+      INPUT_FORCE: ${{ inputs.force }}
+      EVENT_SHA: ${{ github.sha }}
+      ALLOW_SECRET_VERSION_1: ${{ vars.ALLOW_SECRET_VERSION_1 }}
+    steps:
+      - name: Refuse to deploy while the send window is open
+        run: |
+          set -euo pipefail
+          hhmm="$(TZ=Asia/Kolkata date +%H%M)"
+          if [ "$INPUT_FORCE" != "true" ] && [ "$((10#$hhmm))" -ge 855 ] && [ "$((10#$hhmm))" -le 1015 ]; then
+            echo "::error::It is $hhmm IST: the send window (09:00-10:00) is open or about to open. Deploying retires the old revision and can kill a send in flight. Re-run after 10:15 IST, or run manually with force=true for an emergency."
+            exit 1
+          fi
+
+
+      - name: Resolve target commit
+        id: target
+        run: |
+          set -euo pipefail
+          sha="${INPUT_SHA:-$EVENT_SHA}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sha must be a full 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          for v in PROJECT REGION; do
+            [ -n "${!v}" ] || { echo "repository variable for $v is not set (GCP_PROJECT / GCP_REGION)" >&2; exit 1; }
+          done
+          repo="${REGION}-docker.pkg.dev/${PROJECT}/mail-autosender"
+          {
+            echo "sha=$sha"
+            echo "short=${sha:0:12}"
+            echo "build=$([ -z "${INPUT_SHA}" ] && echo true || echo false)"
+            echo "backend_image=${repo}/mail-backend:${sha}"
+            echo "web_image=${repo}/mail-web:${sha}"
+            echo "registry=${REGION}-docker.pkg.dev"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.target.outputs.build == 'true'
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation, no keys)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ vars.GCP_PROJECT }}
+
+      # Version 1 of each secret is the throwaway placeholder that Terraform seeds. Metadata only (versions list), never payloads.
+      - name: Preflight, required secrets have a real version
+        run: |
+          set -euo pipefail
+          bad=0
+          for s in mail-database-url mail-gmail-user mail-gmail-app-password mail-session-secret mail-admin-password mail-signature-html; do
+            latest="$(gcloud secrets versions list "$s" --filter='state=ENABLED' --format='value(name.basename())' | sort -n | tail -1)"
+            if [ -z "$latest" ]; then
+              echo "::error::secret $s has no enabled version"; bad=1
+            elif [ "$latest" = "1" ] && [ "$ALLOW_SECRET_VERSION_1" != "true" ]; then
+              echo "::error::secret $s is still at version 1 (the placeholder). Add a real version: printf '%s' \"\$VALUE\" | gcloud secrets versions add $s --data-file=-"; bad=1
+            fi
+          done
+          exit $bad
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ steps.target.outputs.registry }}" --quiet
+
+      - name: Look up service state (URLs, current revisions for rollback)
+        id: state
+        run: |
+          set -euo pipefail
+          current() { # revision currently serving 100% of traffic, or empty
+            gcloud run services describe "$1" --region "$REGION" --format=json |
+              jq -r '[.status.traffic[]? | select(.percent == 100) | .revisionName // empty] | first // ""'
+          }
+          backend_url="$(gcloud run services describe mail-backend --region "$REGION" --format='value(status.url)')"
+          web_url="$(gcloud run services describe mail-web --region "$REGION" --format='value(status.url)')"
+          {
+            echo "backend_url=$backend_url"
+            echo "web_url=$web_url"
+            echo "backend_prev=$(current mail-backend)"
+            echo "web_prev=$(current mail-web)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify images exist (manual redeploy / rollback)
+        if: steps.target.outputs.build != 'true'
+        run: |
+          set -euo pipefail
+          gcloud artifacts docker images describe "${{ steps.target.outputs.backend_image }}" > /dev/null
+          gcloud artifacts docker images describe "${{ steps.target.outputs.web_image }}" > /dev/null
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.target.outputs.build == 'true'
+
+      - name: Build and push backend image
+        if: steps.target.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.target.outputs.backend_image }}
+          # No attestation manifests: one build is one Artifact Registry version (cleanup policy counts builds); CI scans with trivy.
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build and push web image (BACKEND_URL is baked into the /api/* rewrite at build time)
+        if: steps.target.outputs.build == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: web
+          file: web/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.target.outputs.web_image }}
+          build-args: BACKEND_URL=${{ steps.state.outputs.backend_url }}
+          # No attestation manifests: one build is one Artifact Registry version (cleanup policy counts builds); CI scans with trivy.
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+      # Migrations run to completion BEFORE any traffic moves; a failure stops the deploy (the job never retries).
+      - name: Run database migrations
+        run: |
+          set -euo pipefail
+          gcloud run jobs update mail-migrate --region "$REGION" --image "${{ steps.target.outputs.backend_image }}" --quiet
+          gcloud run jobs update mail-seed-admin --region "$REGION" --image "${{ steps.target.outputs.backend_image }}" --quiet
+          gcloud run jobs execute mail-migrate --region "$REGION" --wait
+
+      - name: Deploy backend (no traffic) and smoke test the new revision
+        id: backend
+        env:
+          IMAGE: ${{ steps.target.outputs.backend_image }}
+          TAG: c${{ steps.target.outputs.short }}
+        run: |
+          set -euo pipefail
+          gcloud run deploy mail-backend --region "$REGION" --image "$IMAGE" --no-traffic --tag "$TAG" --quiet
+          rev="$(gcloud run services describe mail-backend --region "$REGION" --format='value(status.latestCreatedRevisionName)')"
+          tag_url="$(gcloud run services describe mail-backend --region "$REGION" --format=json |
+            jq -r --arg t "$TAG" '.status.traffic[] | select(.tag == $t) | .url')"
+          [ -n "$rev" ] && [ -n "$tag_url" ] || { echo "could not resolve candidate revision/url" >&2; exit 1; }
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors "$tag_url/healthz"
+          echo
+          # /internal/* must refuse anonymous callers.
+          code="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$tag_url/internal/tick")"
+          [ "$code" = "401" ] || [ "$code" = "403" ] || { echo "/internal/tick answered $code to an anonymous call (expected 401/403)" >&2; exit 1; }
+
+      - name: Shift backend traffic to the new revision
+        run: |
+          set -euo pipefail
+          # Re-check the send window: the build and the environment approval may have taken hours.
+          hhmm="$(TZ=Asia/Kolkata date +%H%M)"
+          if [ "$INPUT_FORCE" != "true" ] && [ "$((10#$hhmm))" -ge 855 ] && [ "$((10#$hhmm))" -le 1015 ]; then
+            echo "::error::It is $hhmm IST: the send window is open. Traffic was NOT shifted; the candidate revision stays at 0%. Re-run after 10:15 IST (or force=true)."
+            exit 1
+          fi
+          gcloud run services update-traffic mail-backend --region "$REGION" --to-latest --quiet
+          echo "BACKEND_SHIFTED=true" >> "$GITHUB_ENV"
+
+      - name: Post-deploy smoke test (backend)
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors "${{ steps.state.outputs.backend_url }}/healthz"
+          echo
+
+      - name: Deploy web (no traffic) and smoke test the new revision
+        id: web
+        env:
+          IMAGE: ${{ steps.target.outputs.web_image }}
+          TAG: c${{ steps.target.outputs.short }}
+        run: |
+          set -euo pipefail
+          gcloud run deploy mail-web --region "$REGION" --image "$IMAGE" --no-traffic --tag "$TAG" --quiet
+          tag_url="$(gcloud run services describe mail-web --region "$REGION" --format=json |
+            jq -r --arg t "$TAG" '.status.traffic[] | select(.tag == $t) | .url')"
+          [ -n "$tag_url" ] || { echo "could not resolve candidate url" >&2; exit 1; }
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors --output /dev/null "$tag_url/login"
+
+      - name: Shift web traffic to the new revision
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic mail-web --region "$REGION" --to-latest --quiet
+          echo "WEB_SHIFTED=true" >> "$GITHUB_ENV"
+
+      - name: Post-deploy smoke test (web, and web to backend through the /api rewrite)
+        run: |
+          set -euo pipefail
+          web="${{ steps.state.outputs.web_url }}"
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors --output /dev/null "$web/login"
+          # Proves the build-time /api/* rewrite reaches the backend (the CSRF endpoint is public and read-only).
+          curl --fail --silent --show-error --retry 3 --retry-delay 5 --retry-all-errors --output /dev/null "$web/api/auth/csrf"
+
+      - name: Roll back to the previous revisions
+        if: ${{ failure() && (env.BACKEND_SHIFTED == 'true' || env.WEB_SHIFTED == 'true') }}
+        env:
+          BACKEND_PREV: ${{ steps.state.outputs.backend_prev }}
+          WEB_PREV: ${{ steps.state.outputs.web_prev }}
+        run: |
+          set -uo pipefail
+          status=0
+          if [ "${WEB_SHIFTED:-}" = "true" ] && [ -n "$WEB_PREV" ]; then
+            gcloud run services update-traffic mail-web --region "$REGION" --to-revisions="$WEB_PREV=100" --quiet || status=1
+          fi
+          if [ "${BACKEND_SHIFTED:-}" = "true" ] && [ -n "$BACKEND_PREV" ]; then
+            gcloud run services update-traffic mail-backend --region "$REGION" --to-revisions="$BACKEND_PREV=100" --quiet || status=1
+          fi
+          echo "::warning::Deploy failed after traffic moved: rolled back to $BACKEND_PREV / $WEB_PREV (database migrations are forward-only and were not reverted)."
+          exit $status
+
+      - name: Remove candidate tags
+        if: always()
+        env:
+          TAG: c${{ steps.target.outputs.short }}
+        run: |
+          for svc in mail-backend mail-web; do
+            gcloud run services update-traffic "$svc" --region "$REGION" --remove-tags "$TAG" --quiet || true
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy ${{ steps.target.outputs.short }}"
+            echo "- backend: ${{ steps.state.outputs.backend_url }}"
+            echo "- web: ${{ steps.state.outputs.web_url }}"
+            echo "- result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

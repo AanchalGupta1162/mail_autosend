@@ -3,8 +3,8 @@ node_modules/
 *.log
 .DS_Store
 
-# Real data — regenerate the sheet with `npm run sample-sheet`, keep your
-# actual resume out of git (resume-placeholder.txt stays tracked).
-sample-recruiters.xlsx
+# Real data: keep your actual resume and signature out of git.
 attachments
 signature.html
+# SDD scratch workspace
+.superpowers/

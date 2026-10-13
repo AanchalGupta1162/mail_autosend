@@ -1,0 +1,24 @@
+# Secrets and real data never enter an image or a build context.
+.env
+.env.*
+!.env.example
+attachments
+signature.html
+# Not needed at run time
+.git
+.gitignore
+.superpowers
+.impeccable
+.claude
+docs
+infra
+.github
+data
+test-contacts.csv
+test
+web
+node_modules
+npm-debug.log
+*.log
+Dockerfile
+.dockerignore
