@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars (git-ignored) and adjust. Everything not listed keeps its default (see variables.tf).
+project_id  = "codecell-vesit"
+region      = "asia-south1"
+alert_email = "you@example.com"
+
+# Billing account for the budget alert (gcloud billing accounts list). Leave empty to skip the budget.
+billing_account_id = ""
+budget_amount_usd  = 10
+
+# Safe defaults for the first apply: schedulers paused, dry run on, sweep alert off.
+scheduler_paused    = true
+dry_run             = true
+sweep_alert_enabled = false
+
+github_repo    = "Harshavardhan-28/mail_autosend"
+admin_username = "admin"
+# from_name    = "Your Name"
