@@ -23,6 +23,12 @@ test("/healthz is public and returns no data", async () => {
   assert.deepEqual(r.json, { ok: true });
 });
 
+test("/health is a public alias (Cloud Run reserves /healthz on the public URL)", async () => {
+  const r = await t.client().get("/health");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json, { ok: true });
+});
+
 test("helmet headers and strict CSP; x-powered-by off", async () => {
   const r = await t.client().get("/healthz");
   assert.equal(r.headers.get("x-powered-by"), null);

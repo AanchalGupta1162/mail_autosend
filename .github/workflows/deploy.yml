@@ -211,7 +211,7 @@ jobs:
             jq -r --arg t "$TAG" '.status.traffic[] | select(.tag == $t) | .url')"
           [ -n "$rev" ] && [ -n "$tag_url" ] || { echo "could not resolve candidate revision/url" >&2; exit 1; }
           echo "revision=$rev" >> "$GITHUB_OUTPUT"
-          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors "$tag_url/healthz"
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors "$tag_url/health"
           echo
           # /internal/* must refuse anonymous callers.
           code="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$tag_url/internal/tick")"
@@ -232,7 +232,7 @@ jobs:
       - name: Post-deploy smoke test (backend)
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors "${{ steps.state.outputs.backend_url }}/healthz"
+          curl --fail --silent --show-error --retry 6 --retry-delay 5 --retry-all-errors "${{ steps.state.outputs.backend_url }}/health"
           echo
 
       - name: Deploy web (no traffic) and smoke test the new revision
