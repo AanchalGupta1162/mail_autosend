@@ -1,7 +1,10 @@
 import { Router } from "express";
+import { z } from "zod";
+import { HttpError } from "../errors.js";
 import { followupSendsAllowed, runSweep } from "../../worker/sweep.js";
 
 const DAY_MS = 86_400_000;
+const noBody = z.strictObject({});
 
 // A fixed number of aggregate queries (no per-row follow-ups), run concurrently.
 export async function loadDashboard(pool, config) {
@@ -68,8 +71,9 @@ export function dashboardRouter({ pool, config, checkReply, logger }) {
     }
   });
 
-  router.post("/sweep", async (_req, res, next) => {
+  router.post("/sweep", async (req, res, next) => {
     try {
+      if (!noBody.safeParse(req.body ?? {}).success) throw new HttpError(400, "Invalid request body");
       res.json(await runSweep({ pool, config, checkReply, logger }));
     } catch (err) {
       next(err);

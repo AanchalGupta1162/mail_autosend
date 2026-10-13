@@ -115,6 +115,12 @@ test("POST /sweep in dry-run without a checker reports skipped", async () => {
   assert.equal(r.json.skipped, true);
 });
 
+test("POST /sweep rejects unknown body fields and accepts an empty body", async () => {
+  assert.equal((await c.post("/api/sweep", { force: true })).status, 400);
+  assert.equal((await c.post("/api/sweep", { since: "2020-01-01" })).status, 400);
+  assert.equal((await c.raw("POST", "/api/sweep")).status, 200);
+});
+
 test("POST /sweep with an injected checker marks replies", async () => {
   const s = await startTestApp({}, { appOptions: { checkReply: async (_cfg, id) => id === "<hit@x>" } });
   try {
