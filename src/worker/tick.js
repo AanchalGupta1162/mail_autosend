@@ -8,6 +8,7 @@ import { buildMail, loadSignature, newMessageId } from "./send.js";
 
 export const STALE_SENDING_MS = 10 * 60_000;
 export const MAX_ATTEMPTS = 3;
+export const HOLD_MINUTES = 15; // credential/config errors: try again this much later, attempts untouched
 export const RETRY_BACKOFF_MINUTES = [2, 10]; // after attempt 1, after attempt 2
 const DAY_MS = 86_400_000;
 const CLAIM_LOCK_KEY = 727_002; // serialises claim + cap accounting across concurrent ticks
@@ -124,14 +125,20 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
 
     const why = await skipReason(client, contact, message);
     let initialMessageId = null;
+    let dryInitial = false;
     if (!why && message.kind === "followup") {
       const init = await client.query(
-        "SELECT message_id FROM messages WHERE contact_id = $1 AND kind = 'initial' AND state = 'sent' AND message_id IS NOT NULL ORDER BY sent_at DESC LIMIT 1",
+        "SELECT message_id, dry_run FROM messages WHERE contact_id = $1 AND kind = 'initial' AND state = 'sent' AND message_id IS NOT NULL ORDER BY sent_at DESC LIMIT 1",
         [contact.id],
       );
       initialMessageId = init.rows[0]?.message_id ?? null;
+      // A dry-run "send" delivered nothing: a real follow-up would thread onto a Message-ID no one has.
+      if (initialMessageId && init.rows[0].dry_run && !config.dryRun) dryInitial = true;
     }
-    const skip = why ?? (message.kind === "followup" && !initialMessageId ? "initial Message-ID unknown" : null);
+    const skip =
+      why ??
+      (dryInitial ? "the first email was a dry run (nothing was delivered), so there is nothing to follow up on" : null) ??
+      (message.kind === "followup" && !initialMessageId ? "initial Message-ID unknown" : null);
     if (skip) {
       await client.query("UPDATE messages SET state = 'cancelled', error = $2 WHERE id = $1", [message.id, trim(`Not sent: ${skip}`)]);
       if (message.kind === "initial") {
@@ -184,6 +191,8 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
         contact.id,
         JSON.stringify({ messageId: message.id, kind: message.kind, dryRun: config.dryRun }),
       ]);
+      // A real send proves credentials and files work again.
+      if (!config.dryRun) await client.query("DELETE FROM settings WHERE key = 'send_hold'");
       await client.query("COMMIT");
       return "sent";
     }
@@ -197,6 +206,23 @@ async function processMessage({ pool, mailer, config, sendTimeoutMs, logger }, c
         JSON.stringify({ messageId: message.id, kind: message.kind, reason: "ambiguous_send_failure" }),
       ]);
       outcome = "needsReview";
+    } else if (verdict.outcome === "hold") {
+      // Nothing was sent and the cause is not this message: put it back without using an attempt,
+      // never mark the contact failed, and leave a visible marker for the dashboard.
+      await client.query(
+        "UPDATE messages SET state = 'scheduled', scheduled_for = $2, attempts = GREATEST(attempts - 1, 0), claimed_at = NULL, error = $3 WHERE id = $1",
+        [message.id, new Date(clock().getTime() + HOLD_MINUTES * 60_000), note],
+      );
+      const holdInfo = { at: clock().toISOString(), code: String(failure?.code ?? "ERROR"), message: note };
+      await client.query(
+        "INSERT INTO settings(key, value) VALUES ('send_hold', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        [JSON.stringify(holdInfo)],
+      );
+      await client.query("INSERT INTO events(contact_id, type, meta) VALUES ($1, 'send_held', $2)", [
+        contact.id,
+        JSON.stringify({ messageId: message.id, kind: message.kind, code: holdInfo.code }),
+      ]);
+      outcome = "held";
     } else if (verdict.outcome === "retry" && message.attempts < MAX_ATTEMPTS) {
       const minutes = RETRY_BACKOFF_MINUTES[Math.min(message.attempts, RETRY_BACKOFF_MINUTES.length) - 1];
       await client.query(
@@ -263,7 +289,7 @@ export async function runTick({
   onClaimed, // test seam: called after a claim commits, before the message is processed
 }) {
   const clock = typeof now === "function" ? now : () => now;
-  const summary = { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, retried: 0, failed: 0, needsReview: 0 };
+  const summary = { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, held: 0, retried: 0, failed: 0, needsReview: 0 };
   summary.staleRecovered = await recoverStale(pool, clock());
   const ctx = { pool, mailer, config, sendTimeoutMs, logger };
   let attemptedBefore = false;
@@ -291,6 +317,7 @@ export async function runTick({
     }
     const result = await processMessage(ctx, row, clock);
     if (result in summary) summary[result] += 1;
+    if (result === "held") break; // systemic (credentials/config): do not hammer SMTP with every due message
     attemptedBefore = result === "sent" || result === "retried" || result === "failed" || result === "needsReview";
   }
   return summary;

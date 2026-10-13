@@ -82,18 +82,19 @@ test("the batch preview endpoint shows the signature", async () => {
   }
 });
 
-test("real mode: a signature file that vanished after startup fails the send before SMTP (retryable); dry-run stays lenient", async () => {
+test("real mode: a signature file that vanished after startup holds the queue before SMTP (no attempt consumed); dry-run stays lenient", async () => {
   const email = "sig3@example.com";
   const { contacts } = await seedBatch(pool, [email], { overrides: { [email]: { status: "scheduled" } } });
   const msg = await addMessage(pool, contacts[0].id, {});
   const gone = { ...config, signaturePath: path.resolve("test/fixtures/does-not-exist.html") };
   const out = await runTick({ pool, mailer: smtp.transport(), config: gone, sleep: async () => {}, logger: silent });
   assert.equal(out.sent, 0);
-  assert.equal(out.retried, 1);
+  assert.equal(out.held, 1);
   assert.equal(smtp.state.dataConnections, 0, "nothing reached SMTP");
   const row = (await pool.query("select state, error from messages where id=$1", [msg.id])).rows[0];
   assert.equal(row.state, "scheduled");
   assert.match(row.error, /ENOENT|signature/i);
+  assert.equal((await pool.query("select attempts from messages where id=$1", [msg.id])).rows[0].attempts, 0);
   assert.equal((await pool.query("select status from contacts where id=$1", [contacts[0].id])).rows[0].status, "scheduled");
 
   // dry-run (jsonTransport) is lenient: sends unsigned

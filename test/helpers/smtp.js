@@ -6,6 +6,7 @@ import nodemailer from "nodemailer";
 //   die-after-data  354 on DATA, reads the body, then destroys the socket without replying
 //   reply-then-die  replies "250 OK queued" after the body and immediately destroys the socket
 //   reject-rcpt   550 on RCPT TO
+//   reject-auth   advertises AUTH and answers 535 to it (a wrong app password)
 // `dataConnections` counts connections that reached the DATA command (message may be delivered).
 export async function startFakeSmtp(mode = "ok") {
   const state = { mode, dataConnections: 0, bodies: [] };
@@ -38,7 +39,8 @@ export async function startFakeSmtp(mode = "ok") {
         const line = buf.slice(0, nl);
         buf = buf.slice(nl + 2);
         const cmd = line.toUpperCase();
-        if (cmd.startsWith("EHLO")) socket.write("250-fake\r\n250 8BITMIME\r\n");
+        if (cmd.startsWith("EHLO")) socket.write(state.mode === "reject-auth" ? "250-fake\r\n250-AUTH PLAIN LOGIN\r\n250 8BITMIME\r\n" : "250-fake\r\n250 8BITMIME\r\n");
+        else if (cmd.startsWith("AUTH")) socket.write("535 5.7.8 Username and Password not accepted\r\n");
         else if (cmd.startsWith("MAIL FROM")) socket.write("250 OK\r\n");
         else if (cmd.startsWith("RCPT TO")) socket.write(state.mode === "reject-rcpt" ? "550 5.1.1 no such user\r\n" : "250 OK\r\n");
         else if (cmd === "DATA") {

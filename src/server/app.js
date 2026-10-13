@@ -13,9 +13,9 @@ import { errorHandler, notFound } from "./errors.js";
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
-// createApp({pool, config, mailer?, logger?, loginRateLimit?}) -> express app.
+// createApp({pool, config, mailer?, logger?, loginRateLimit?, csrfRateLimit?}) -> express app.
 // The session table comes from migration 002 (resolved via the pool's search_path).
-export function createApp({ pool, config, mailer, checkReply, logger = console, loginRateLimit = {} } = {}) {
+export function createApp({ pool, config, mailer, checkReply, logger = console, loginRateLimit = {}, csrfRateLimit = {} } = {}) {
   if (!pool) throw new Error("pool is required");
   if (typeof config?.sessionSecret !== "string" || config.sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters");
@@ -25,6 +25,12 @@ export function createApp({ pool, config, mailer, checkReply, logger = console, 
   app.disable("x-powered-by");
   if (config.trustProxy) app.set("trust proxy", config.trustProxy); // hop count, see env.js
   app.locals.mailer = mailer;
+  if (production && !config.trustProxy) {
+    logger.warn(
+      "NODE_ENV=production with TRUST_PROXY=0: the session cookie is Secure, and behind a TLS-terminating proxy Express sees plain HTTP, " +
+        "so it never sets the cookie (login returns 200, then every call is 401). Set TRUST_PROXY to the number of proxies (>=1) in front of this server.",
+    );
+  }
 
   app.use(
     helmet({
@@ -74,6 +80,18 @@ export function createApp({ pool, config, mailer, checkReply, logger = console, 
     next();
   });
   app.use(express.json({ limit: "100kb" }));
+
+  // Anonymous GET /csrf creates a session row, so it is throttled per IP too (generous: a page load fetches it once).
+  app.use(
+    "/api/auth/csrf",
+    rateLimit({
+      windowMs: csrfRateLimit.windowMs ?? 15 * 60 * 1000,
+      limit: csrfRateLimit.limit ?? 300,
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ error: "Too many requests, try again later" }),
+    }),
+  );
 
   // Per-IP throttle runs before CSRF/auth so floods are cut early.
   app.use(

@@ -52,15 +52,19 @@ test("connect-time proofs retry; the same codes without proof are ambiguous", ()
   assert.equal(out(e({ code: "EPROTOCOL", command: "CONN" })), "ambiguous");
 });
 
-test("pre-DATA SMTP rejections: 4xx retry, 5xx on MAIL/RCPT permanent, auth retry", () => {
-  assert.equal(out(e({ code: "EAUTH", command: "AUTH PLAIN", responseCode: 454 })), "retry");
-  assert.equal(out(e({ code: "EAUTH", command: "AUTH LOGIN" })), "retry");
+test("pre-DATA SMTP rejections: 4xx retry, 5xx on MAIL/RCPT permanent, credential/config errors hold", () => {
+  // Not the message's fault and retrying will not help: hold the queue instead of burning attempts.
+  assert.equal(out(e({ code: "EAUTH", command: "AUTH PLAIN", responseCode: 454 })), "hold");
+  assert.equal(out(e({ code: "EAUTH", command: "AUTH PLAIN", responseCode: 535 })), "hold");
+  assert.equal(out(e({ code: "EAUTH", command: "AUTH LOGIN" })), "hold");
+  assert.equal(out(e({ code: "EAUTH" })), "hold");
   assert.equal(out(e({ code: "EENVELOPE", command: "RCPT TO", responseCode: 450 })), "retry");
   assert.equal(out(e({ code: "EENVELOPE", command: "RCPT TO", responseCode: 550 })), "permanent");
   assert.equal(out(e({ code: "EENVELOPE", command: "MAIL FROM", responseCode: 553 })), "permanent");
   assert.equal(out(e({ code: "EPROTOCOL", command: "EHLO", responseCode: 421 })), "retry");
   assert.equal(out(e({ code: "EPROTOCOL", command: "STARTTLS", responseCode: 454 })), "retry");
-  assert.equal(out(e({ code: "ENOENT" })), "retry"); // attachment missing, nothing sent
+  assert.equal(out(e({ code: "ENOENT" })), "hold"); // attachment/signature missing, nothing sent
+  assert.equal(out(e({ code: "EACCES" })), "hold");
 });
 
 test("anything with a 2xx/3xx response, a DATA command, or unknown shape is ambiguous", () => {

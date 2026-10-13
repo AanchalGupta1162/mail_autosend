@@ -40,3 +40,44 @@ test("TRUST_PROXY unset: X-Forwarded-For is ignored, so a spoofed header cannot 
     await t.close();
   }
 });
+
+test("production without TRUST_PROXY logs a loud warning (secure cookie never set behind TLS termination); other combinations stay quiet", async () => {
+  const warnings = [];
+  const logger = { error() {}, info() {}, warn: (m) => warnings.push(String(m)) };
+  for (const [env, expectWarn] of [
+    [{ NODE_ENV: "production" }, true],
+    [{ NODE_ENV: "production", TRUST_PROXY: "1" }, false],
+    [{ NODE_ENV: "development" }, false],
+  ]) {
+    warnings.length = 0;
+    const t = await startTestApp(env, { appOptions: { logger } });
+    try {
+      assert.equal(warnings.some((w) => /TRUST_PROXY/.test(w) && /secure|TLS|HTTPS/i.test(w)), expectWarn, JSON.stringify(env));
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("GET /api/auth/csrf is rate limited per IP (it creates a session row per anonymous request)", async () => {
+  const t = await startTestApp({}, { appOptions: { csrfRateLimit: { limit: 3 } } });
+  try {
+    const statuses = [];
+    for (let i = 0; i < 5; i++) statuses.push((await t.client().get("/api/auth/csrf")).status);
+    assert.deepEqual(statuses, [200, 200, 200, 429, 429]);
+    const { rows } = await t.pool.query("select count(*)::int n from session");
+    assert.equal(rows[0].n, 3, "throttled requests create no session");
+  } finally {
+    await t.close();
+  }
+});
+
+test("the default CSRF limit is generous enough for normal use", async () => {
+  const t = await startTestApp({}, { defaultRateLimit: true });
+  try {
+    const c = t.client();
+    for (let i = 0; i < 60; i++) assert.equal((await c.get("/api/auth/csrf")).status, 200);
+  } finally {
+    await t.close();
+  }
+});

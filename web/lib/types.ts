@@ -203,5 +203,7 @@ export interface Dashboard {
   byCompany: CompanyStat[];
   sweep: SweepState | null;
   followupsHeld: boolean;
+  /** Set while sending is paused by a credentials/config error. */
+  sendHold: { at: string; code: string; message: string } | null;
   dryRun: boolean;
 }

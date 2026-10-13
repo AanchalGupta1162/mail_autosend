@@ -20,6 +20,7 @@ export async function startTestApp(envOverrides = {}, { defaultRateLimit = false
     pool: db.pool,
     config,
     logger: silent,
+    ...(defaultRateLimit ? {} : { csrfRateLimit: { limit: 100_000 } }),
     ...appOptions,
     ...(defaultRateLimit ? {} : { loginRateLimit: { limit: 10_000 } }),
   });

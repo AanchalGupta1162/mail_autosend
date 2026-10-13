@@ -18,6 +18,7 @@ before(async () => {
 after(async () => db?.close());
 beforeEach(async () => {
   await pool.query("TRUNCATE batches, suppressions, events RESTART IDENTITY CASCADE");
+  await pool.query("DELETE FROM settings WHERE key = 'send_hold'");
   await pool.query("UPDATE settings SET value = jsonb_build_object('subject','Re: {{subject}}','body', E'Hi {{firstName}},\\n\\nJust following up on my note about the {{role}} role at {{company}}. Happy to share anything that would help.\\n\\nBest,\\nHarshavardhan Khamkar') WHERE key='followup_template'");
 });
 
@@ -177,7 +178,7 @@ test("(d) a sending row older than 10 minutes becomes needs_review and is never 
 
 test("(d) retries only when nothing was sent: up to 3 attempts with backoff, then failed", async () => {
   const { contact, msg } = await dueInitial();
-  const authErr = Object.assign(new Error("Invalid login"), { code: "EAUTH", command: "AUTH PLAIN", responseCode: 454 });
+  const authErr = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:25"), { code: "ESOCKET", command: "CONN", syscall: "connect" });
   const m = fakeMailer({ fail: authErr });
   let clock = Date.now();
   const now = () => new Date(clock);
@@ -188,7 +189,7 @@ test("(d) retries only when nothing was sent: up to 3 attempts with backoff, the
   assert.equal(row.state, "scheduled");
   assert.equal(row.attempts, 1);
   assert.ok(row.scheduled_for.getTime() > clock, "backoff pushes scheduled_for into the future");
-  assert.match(row.error, /EAUTH/);
+  assert.match(row.error, /ESOCKET/);
 
   assert.equal((await tick({ mailer: m, now })).sent + m.calls.length - 1, 0, "not due again yet");
   clock += 60 * 60_000;
@@ -207,7 +208,7 @@ test("(d) retries only when nothing was sent: up to 3 attempts with backoff, the
   assert.equal(new Set(m.calls.map((x) => x.messageId)).size, 1);
   const c = await contactRow(contact.id);
   assert.equal(c.status, "failed");
-  assert.match(c.error, /EAUTH/);
+  assert.match(c.error, /ESOCKET/);
   clock += 24 * 60 * 60_000;
   await tick({ mailer: m, now });
   assert.equal(m.calls.length, 3, "never retried after failed");
@@ -458,9 +459,93 @@ test("recording-failure fallback never flips a row that was resolved meanwhile (
   assert.equal((await msgRow(msg.id)).state, "cancelled");
 });
 
+test("F1: a rejected app password (real EAUTH from a scripted SMTP server) holds sending: no attempt consumed, contact never failed, banner state set, cleared by the next good send", async () => {
+  const smtp = await startFakeSmtp("reject-auth");
+  try {
+    const a = await dueInitial();
+    const b = await dueInitial();
+    const bad = smtp.transport({ auth: { user: "u", pass: "wrong" } });
+    let clock = Date.now();
+    const now = () => new Date(clock);
+    let first;
+    for (let i = 0; i < 6; i++) {
+      const s = await tick({ mailer: bad, now });
+      if (i === 0) first = s;
+      clock += 20 * 60_000;
+    }
+    assert.equal(first.held, 1);
+    assert.equal(first.claimed, 1, "a systemic error stops the tick instead of trying every due message");
+    assert.equal(first.retried + first.failed + first.sent, 0);
+    for (const x of [a, b]) {
+      const row = await msgRow(x.msg.id);
+      assert.equal(row.state, "scheduled", "still waiting, never failed");
+      assert.equal(row.attempts, 0, "holds do not consume the 3-attempt budget");
+      assert.equal((await contactRow(x.contact.id)).status, "scheduled");
+    }
+    assert.match((await msgRow(a.msg.id)).error, /EAUTH/);
+    const hold = (await pool.query("select value from settings where key='send_hold'")).rows[0].value;
+    assert.equal(hold.code, "EAUTH");
+    assert.ok(hold.at);
+    assert.ok((await pool.query("select 1 from events where type='send_held'")).rowCount >= 1);
+    assert.equal((await pool.query("select count(*)::int n from messages where state='sent'")).rows[0].n, 0);
+
+    // First hold pushed the message ~15 minutes out.
+    const t0 = Date.now();
+    await pool.query("update messages set state='scheduled', scheduled_for=$2 where id=$1", [a.msg.id, new Date(t0 - 1000)]);
+    await tick({ mailer: bad, now: () => new Date(t0) });
+    const gap = (await msgRow(a.msg.id)).scheduled_for.getTime() - t0;
+    assert.ok(gap >= 14 * 60_000 && gap <= 16 * 60_000, `hold is ~15 min, got ${gap}`);
+
+    // Credentials fixed: the next due message sends and the hold clears.
+    await pool.query("update messages set scheduled_for = now() - interval '1 minute' where state='scheduled'");
+    const good = smtp.transport();
+    smtp.setMode("ok");
+    const s2 = await tick({ mailer: good });
+    assert.ok(s2.sent >= 1);
+    assert.equal((await pool.query("select count(*)::int n from settings where key='send_hold'")).rows[0].n, 0);
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("F1: a hold cannot be mistaken for a send and does not use up the daily cap", async () => {
+  const smtp = await startFakeSmtp("reject-auth");
+  try {
+    await dueInitial();
+    const s = await tick({ mailer: smtp.transport({ auth: { user: "u", pass: "x" } }), config: { dailySendCap: 1 } });
+    assert.equal(s.held, 1);
+    assert.equal(s.sent, 0);
+    smtp.setMode("ok");
+    await pool.query("update messages set scheduled_for = now() - interval '1 minute'");
+    const s2 = await tick({ mailer: smtp.transport(), config: { dailySendCap: 1 } });
+    assert.equal(s2.sent, 1, "cap of 1 still available after a hold");
+  } finally {
+    await smtp.close();
+  }
+});
+
+test("F2: in real mode a follow-up whose initial was a DRY RUN is skipped with a clear reason, never sent; dry-run mode does not filter", async () => {
+  const { contact } = await sentContact({ followup_requested: true }, { dryRun: true });
+  const f = await addMessage(pool, contact.id, { kind: "followup" });
+  const m = fakeMailer();
+  await tick({ mailer: m });
+  assert.equal(m.calls.length, 0);
+  const row = await msgRow(f.id);
+  assert.equal(row.state, "cancelled");
+  assert.match(row.error, /dry run/i);
+  const ev = (await pool.query("select meta from events where contact_id=$1 and type='send_skipped'", [contact.id])).rows[0];
+  assert.match(ev.meta.reason, /dry run/i);
+
+  const other = await sentContact({ followup_requested: true }, { dryRun: true });
+  await addMessage(pool, other.contact.id, { kind: "followup" });
+  const m2 = fakeMailer();
+  await tick({ mailer: m2, config: { dryRun: true } });
+  assert.equal(m2.calls.length, 1, "dry-run mode follows up dry-run initials");
+});
+
 test("a tick with nothing due is a no-op summary", async () => {
   const s = await tick();
-  assert.deepEqual(s, { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, retried: 0, failed: 0, needsReview: 0 });
+  assert.deepEqual(s, { staleRecovered: 0, claimed: 0, sent: 0, cancelled: 0, held: 0, retried: 0, failed: 0, needsReview: 0 });
 });
 
 async function threeDue() {

@@ -9,7 +9,7 @@ const noBody = z.strictObject({});
 // A fixed number of aggregate queries (no per-row follow-ups), run concurrently.
 export async function loadDashboard(pool, config) {
   const since = new Date(Date.now() - DAY_MS);
-  const [totals, sent, rate, upcoming, events, companies, sweepState, allowed] = await Promise.all([
+  const [totals, sent, rate, upcoming, events, companies, sweepState, allowed, hold] = await Promise.all([
     pool.query("SELECT status, count(*)::int AS n FROM contacts GROUP BY status"),
     // Same accounting as the send cap in tick.js (sent, in flight, recent needs_review).
     pool.query(
@@ -39,6 +39,7 @@ export async function loadDashboard(pool, config) {
     ),
     pool.query("SELECT value FROM settings WHERE key = 'sweep_state'"),
     followupSendsAllowed(pool, config, new Date()),
+    pool.query("SELECT value FROM settings WHERE key = 'send_hold'"),
   ]);
   const byStatus = { uploaded: 0, scheduled: 0, sent: 0, replied: 0, bounced: 0, opted_out: 0, failed: 0 };
   for (const r of totals.rows) byStatus[r.status] = r.n;
@@ -56,6 +57,8 @@ export async function loadDashboard(pool, config) {
     byCompany: companies.rows,
     sweep: sweepState.rows[0]?.value ?? null,
     followupsHeld: !allowed,
+    // Set while sending is paused by a credentials/config error (EAUTH, unreadable signature/resume).
+    sendHold: hold.rows[0]?.value ?? null,
     dryRun: Boolean(config.dryRun),
   };
 }

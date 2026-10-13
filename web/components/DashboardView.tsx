@@ -242,6 +242,12 @@ export function DashboardView() {
         </section>
       </div>
 
+      {data.sendHold && (
+        <p className="callout callout-warning" role="alert">
+          Sending paused: credentials or configuration error ({data.sendHold.code}) since {formatDateTime(data.sendHold.at)}. Check the Gmail app password and the signature and resume files; sending resumes by itself after the next successful send (retried every 15 minutes).
+        </p>
+      )}
+
       <section className="panel" id="replies" aria-labelledby="h-replies">
         <div className="panel-head">
           <h2 id="h-replies" className="panel-title">

@@ -35,6 +35,15 @@ test("empty dashboard has zeroed numbers", async () => {
   assert.equal(r.json.totals.sent, 0);
 });
 
+test("dashboard exposes the send hold (credentials/config error) or null", async () => {
+  await t.pool.query("delete from settings where key='send_hold'");
+  assert.equal((await c.get("/api/dashboard")).json.sendHold, null);
+  await t.pool.query("insert into settings(key,value) values('send_hold',$1)", [JSON.stringify({ at: "2026-10-01T00:00:00Z", code: "EAUTH" })]);
+  const r = await c.get("/api/dashboard");
+  assert.equal(r.json.sendHold.code, "EAUTH");
+  await t.pool.query("delete from settings where key='send_hold'");
+});
+
 test("dashboard aggregates seeded states", async () => {
   const emails = ["a", "b", "c", "d", "e", "f"].map((x) => `${x}@dash.example.com`);
   const o = (company, status) => ({ company, status });
