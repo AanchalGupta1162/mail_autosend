@@ -9,6 +9,7 @@ import type {
   ContactsPage,
   ContactsQuery,
   ContactWithPreview,
+  ResolveAction,
   Batch,
   Dashboard,
   FollowupResult,
@@ -208,6 +209,10 @@ export function createApi(options: ApiOptions = {}) {
     },
     cancelMessage(messageId: string): Promise<CancelResult> {
       return request("DELETE", `/api/messages/${seg(messageId)}`);
+    },
+    /** Settle a message whose delivery is unknown (state needs_review). */
+    resolveMessage(messageId: string, action: ResolveAction): Promise<CancelResult> {
+      return request("POST", `/api/messages/${seg(messageId)}/resolve`, { json: { action } });
     },
 
     // Template, dashboard, sweep

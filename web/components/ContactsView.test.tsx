@@ -58,4 +58,18 @@ describe("ContactsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Opt out" }));
     await vi.waitFor(() => expect(seen.find((c) => c.method === "POST")?.url).toBe("/api/contacts/c-1/opt-out"));
   });
+
+  it("lets the operator settle a needs_review message, asking first, via the resolve endpoint", async () => {
+    const stuck: ContactListItem = { ...row, messages: [{ id: "m-9", kind: "initial", state: "needs_review", scheduledFor: "2030-02-01T09:00:00Z", sentAt: null }] };
+    const seen = stubFetch((c) =>
+      c.url === "/api/batches" ? json({ batches: [] }) : c.method === "POST" ? json({ message: {}, contact: {} }) : json({ contacts: [stuck], total: 1, page: 1, pageSize: 25 }),
+    );
+    render(<ContactsView />);
+    await userEvent.click(await screen.findByRole("button", { name: "Send again" }));
+    expect(screen.getByText(/duplicate/i)).toBeInTheDocument();
+    expect(seen.some((c) => c.method === "POST")).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Send again" }));
+    await vi.waitFor(() => expect(seen.find((c) => c.method === "POST")?.url).toBe("/api/messages/m-9/resolve"));
+    expect(JSON.parse(seen.find((c) => c.method === "POST")!.body as string)).toEqual({ action: "requeue" });
+  });
 });

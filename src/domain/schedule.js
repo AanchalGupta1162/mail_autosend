@@ -194,6 +194,64 @@ export async function cancelMessage(pool, messageId) {
   });
 }
 
+// A `needs_review` message is one whose delivery is unknown (ambiguous SMTP failure, or a send
+// that was in flight for >10 minutes). The operator checks the Sent folder and decides:
+//   mark_sent  it did go out   -> message sent; initial -> contact sent (+ follow-up if ticked)
+//   requeue    it did not      -> scheduled again now, SAME Message-ID kept so a duplicate would dedupe
+//   cancel     drop it         -> cancelled; initial -> contact back to uploaded, follow-up -> flag cleared
+export const RESOLVE_ACTIONS = ["mark_sent", "requeue", "cancel"];
+const BLOCKED_CONTACT = new Set(["replied", "opted_out", "bounced", "failed"]);
+
+export async function resolveMessage(pool, messageId, action, now = new Date()) {
+  return inTx(pool, async (db) => {
+    const found = await db.query("SELECT contact_id FROM messages WHERE id = $1", [messageId]);
+    if (!found.rowCount) throw new HttpError(404, "Message not found");
+    const contactId = found.rows[0].contact_id;
+    // Same lock order as the worker (contact, then message).
+    const cRes = await db.query("SELECT * FROM contacts WHERE id = $1 FOR UPDATE", [contactId]);
+    const mRes = await db.query("SELECT * FROM messages WHERE id = $1 FOR UPDATE", [messageId]);
+    const contact = cRes.rows[0];
+    const msg = mRes.rows[0];
+    if (msg.state !== "needs_review") throw new HttpError(409, "Only a message that needs review can be resolved");
+
+    let updated;
+    if (action === "mark_sent") {
+      updated = (await db.query("UPDATE messages SET state = 'sent', sent_at = $2, error = NULL WHERE id = $1 RETURNING *", [messageId, now])).rows[0];
+      if (msg.kind === "initial") {
+        await db.query("UPDATE contacts SET status = 'sent', error = NULL WHERE id = $1 AND status = 'scheduled'", [contactId]);
+        await db.query(
+          `INSERT INTO messages(contact_id, kind, state, scheduled_for)
+           SELECT c.id, 'followup', 'scheduled', $2 FROM contacts c
+            WHERE c.id = $1 AND c.followup_requested AND c.status = 'sent'
+              AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.email = lower(c.email))
+           ON CONFLICT (contact_id, kind) WHERE state <> 'cancelled' DO NOTHING`,
+          [contactId, followupDueAt(now, contact.followup_delay_days)],
+        );
+      }
+    } else if (action === "requeue") {
+      if (BLOCKED_CONTACT.has(contact.status)) throw new HttpError(409, `Contact is ${contact.status}; the message cannot be sent again`);
+      const sup = await db.query("SELECT 1 FROM suppressions WHERE email = lower($1)", [contact.email]);
+      if (sup.rowCount) throw new HttpError(409, "Email is suppressed; the message cannot be sent again");
+      updated = (
+        await db.query("UPDATE messages SET state = 'scheduled', scheduled_for = $2, claimed_at = NULL, error = NULL WHERE id = $1 RETURNING *", [messageId, now])
+      ).rows[0];
+    } else {
+      updated = (await db.query("UPDATE messages SET state = 'cancelled' WHERE id = $1 RETURNING *", [messageId])).rows[0];
+      if (msg.kind === "initial") {
+        await db.query("UPDATE contacts SET status = 'uploaded' WHERE id = $1 AND status = 'scheduled'", [contactId]);
+      } else {
+        await db.query("UPDATE contacts SET followup_requested = false WHERE id = $1", [contactId]);
+      }
+    }
+    await db.query("INSERT INTO events(contact_id, type, meta) VALUES ($1, 'needs_review_resolved', $2)", [
+      contactId,
+      JSON.stringify({ messageId, kind: msg.kind, action, source: "manual" }),
+    ]);
+    const c = await db.query("SELECT * FROM contacts WHERE id = $1", [contactId]);
+    return { message: serializeMessage(updated), contact: serializeContact(c.rows[0]) };
+  });
+}
+
 export const followupDueAt = (sentAt, delayDays) => new Date(new Date(sentAt).getTime() + delayDays * DAY_MS);
 
 // Follow-up checkbox. See the API section of the plan.

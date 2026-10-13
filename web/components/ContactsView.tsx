@@ -5,7 +5,7 @@ import { api, ApiError } from "@/lib/api";
 import { checkSendTime, toLocalInputValue, MAX_DAYS_AHEAD } from "@/lib/schedule";
 import { formatDateTime, plural, statusLabel } from "@/lib/format";
 import { refusalText } from "@/lib/refusals";
-import { CONTACT_STATUSES, type BatchSummary, type ContactListItem, type ContactStatus, type ContactsPage } from "@/lib/types";
+import { CONTACT_STATUSES, type BatchSummary, type ContactListItem, type ContactStatus, type ContactsPage, type ResolveAction } from "@/lib/types";
 import { useMode } from "./AppShell";
 import { FollowupToggle } from "./FollowupToggle";
 import { Postmark } from "./Postmark";
@@ -22,10 +22,17 @@ function describe(err: unknown): string {
 
 type Confirm = "opt-out" | "replied" | null;
 
+const RESOLVE_COPY: Record<ResolveAction, { label: string; ask: string; confirm: string }> = {
+  mark_sent: { label: "It was sent", ask: "Check your Sent folder first. Record this email as delivered?", confirm: "Mark sent" },
+  requeue: { label: "Send again", ask: "Send it again now? If it did go out, the recipient gets a duplicate.", confirm: "Send again" },
+  cancel: { label: "Drop it", ask: "Drop this email? It will not be sent.", confirm: "Drop email" },
+};
+
 function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () => void }) {
   const [editing, setEditing] = useState(false);
   const [when, setWhen] = useState("");
   const [confirm, setConfirm] = useState<Confirm>(null);
+  const [resolving, setResolving] = useState<{ id: string; action: ResolveAction } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Hide a cancelled send at once, before the list reload replaces this row's data.
@@ -34,6 +41,7 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
   const initial = contact.messages.find((m) => m.kind === "initial");
   const pending = contact.messages.filter((m) => m.state === "scheduled" && !cancelled.includes(m.id));
   const canSchedule = (contact.status === "uploaded" || contact.status === "scheduled") && (!initial || initial.state === "scheduled");
+  const review = contact.messages.filter((m) => m.state === "needs_review");
   const closed = contact.status === "replied" || contact.status === "opted_out";
 
   async function run(fn: () => Promise<unknown>) {
@@ -43,6 +51,7 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
       await fn();
       setEditing(false);
       setConfirm(null);
+      setResolving(null);
       onDone();
     } catch (err) {
       setError(describe(err));
@@ -81,6 +90,21 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
             Keep
           </button>
         </form>
+      ) : resolving ? (
+        <div className="inline-form">
+          <span className="confirm-text">{RESOLVE_COPY[resolving.action].ask}</span>
+          <button
+            type="button"
+            className={`btn btn-small ${resolving.action === "requeue" ? "btn-danger" : "btn-primary"}`}
+            disabled={busy}
+            onClick={() => run(() => api.resolveMessage(resolving.id, resolving.action))}
+          >
+            {RESOLVE_COPY[resolving.action].confirm}
+          </button>
+          <button type="button" className="btn btn-quiet btn-small" onClick={() => setResolving(null)}>
+            Keep
+          </button>
+        </div>
       ) : confirm ? (
         <div className="inline-form">
           <span className="confirm-text">{confirm === "opt-out" ? "Opt out and stop all sends?" : "Mark as replied and cancel pending sends?"}</span>
@@ -110,6 +134,16 @@ function RowActions({ contact, onDone }: { contact: ContactListItem; onDone: () 
               {initial ? "Reschedule" : "Schedule"}
             </button>
           )}
+          {review.map((m) => (
+            <span key={m.id} className="action-row" role="group" aria-label={`${m.kind === "followup" ? "Follow-up" : "First email"} delivery unknown`}>
+              <span className="muted">{m.kind === "followup" ? "Follow-up" : "First email"} delivery unknown:</span>
+              {(Object.keys(RESOLVE_COPY) as ResolveAction[]).map((action) => (
+                <button key={action} type="button" className="btn-link" onClick={() => setResolving({ id: m.id, action })}>
+                  {RESOLVE_COPY[action].label}
+                </button>
+              ))}
+            </span>
+          ))}
           {pending.map((m) => (
             <button key={m.id} type="button" className="btn-link" disabled={busy} onClick={() => run(async () => {
                 await api.cancelMessage(m.id);

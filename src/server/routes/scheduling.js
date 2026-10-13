@@ -1,17 +1,19 @@
 import { Router } from "express";
 import { z } from "zod";
 import { HttpError } from "../errors.js";
-import { cancelMessage, scheduleBulk, scheduleContact, syncFollowup, validateSendAt, planStagger, MAX_DAYS_AHEAD } from "../../domain/schedule.js";
+import { cancelMessage, resolveMessage, RESOLVE_ACTIONS, scheduleBulk, scheduleContact, syncFollowup, validateSendAt, planStagger, MAX_DAYS_AHEAD } from "../../domain/schedule.js";
 import { getTemplate, putTemplate, templateSchema } from "../../domain/template.js";
 
-const uuid = z.uuid();
+// Normalised to lower case so the same id in two spellings is recognised as a duplicate.
+const uuid = z.uuid().transform((v) => v.toLowerCase());
 const MAX_STAGGER_MINUTES = 24 * 60;
 
 const bulkBody = z.strictObject({
-  contactIds: z.array(z.uuid()).min(1).max(500),
+  contactIds: z.array(uuid).min(1).max(500),
   sendAt: z.string(),
   staggerMinutes: z.number().int().min(0).max(MAX_STAGGER_MINUTES).optional(),
 });
+const resolveBody = z.strictObject({ action: z.enum(RESOLVE_ACTIONS) });
 const oneBody = z.strictObject({ sendAt: z.string() });
 const followupBody = z.strictObject({
   enabled: z.boolean(),
@@ -68,6 +70,11 @@ export function schedulingRouter({ pool, now = () => new Date() }) {
 
   router.delete("/messages/:id", wrap(async (req, res) => {
     res.json(await cancelMessage(pool, param(req, "message")));
+  }));
+
+  router.post("/messages/:id/resolve", wrap(async (req, res) => {
+    const id = param(req, "message");
+    res.json(await resolveMessage(pool, id, body(resolveBody, req).action, now()));
   }));
 
   router.get("/template/followup", wrap(async (_req, res) => {

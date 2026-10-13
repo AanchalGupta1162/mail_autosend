@@ -34,6 +34,17 @@ test("every scheduling route requires auth and CSRF", async () => {
   assert.equal((await noCsrf.raw("PUT", `/api/contacts/${id}/schedule`, { body: {}, csrf: false })).status, 403);
 });
 
+test("ids are case-insensitive: uppercase UUIDs work and a differently-cased duplicate is still a duplicate", async () => {
+  const { batchId, contacts } = await seedBatch(t.pool, [em(), em()]);
+  const dup = await bulk(batchId, { contactIds: [contacts[0].id, contacts[0].id.toUpperCase()], sendAt: future(2 * D) });
+  assert.equal(dup.status, 400);
+  assert.deepEqual(await msgs(contacts[0].id), []);
+  const upper = await bulk(batchId, { contactIds: [contacts[1].id.toUpperCase()], sendAt: future(2 * D) });
+  assert.equal(upper.status, 201, upper.text);
+  const one = await put(`/api/contacts/${contacts[0].id.toUpperCase()}/schedule`, { sendAt: future(2 * D) });
+  assert.equal(one.status, 200, one.text);
+});
+
 test("bulk schedule creates scheduled messages, staggered in contactIds order", async () => {
   const { batchId, contacts } = await seedBatch(t.pool, [em(), em(), em()]);
   const order = [contacts[2].id, contacts[0].id, contacts[1].id];

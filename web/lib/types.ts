@@ -143,6 +143,8 @@ export interface FollowupResult {
   followup: Message | null;
 }
 
+export type ResolveAction = "mark_sent" | "requeue" | "cancel";
+
 export interface CancelResult {
   message: Message;
   contact: Contact;

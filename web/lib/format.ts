@@ -76,6 +76,7 @@ const EVENT_LABEL: Record<string, string> = {
   failed: "Send failed",
   bounced: "Bounced",
   needs_review: "Needs review",
+  needs_review_resolved: "Review settled",
 };
 
 export function eventLabel(type: string): string {
