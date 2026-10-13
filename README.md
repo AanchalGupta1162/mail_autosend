@@ -17,7 +17,7 @@ npm run web:install          # web/ has its own lockfile
 cp .env.example .env         # then fill it in; see below
 ```
 
-Required in `.env`: `DATABASE_URL` and `SESSION_SECRET` (at least 32 random characters, e.g. `openssl rand -hex 32`). `.env.example` documents every variable the code reads; secrets are blank on purpose and the app refuses to start without them. For real sending (`DRY_RUN=false`) it also requires `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SIGNATURE_PATH` pointing at an existing file (the signature HTML is appended to every email). The resume is no longer an environment file: upload PDFs in **Settings > Resumes**, mark one as the default, and the worker attaches the one each message was scheduled with (see *Resume storage* below). `RESUME_PATH` is an optional legacy fallback for messages scheduled before the library existed; a real send with neither a library resume nor that file is held, never sent without a resume. `signature.html` and `attachments/` are git-ignored: keep real files out of git.
+Required in `.env`: `DATABASE_URL` and `SESSION_SECRET` (at least 32 random characters, e.g. `openssl rand -hex 32`). `.env.example` documents every variable the code reads; secrets are blank on purpose and the app refuses to start without them. For real sending (`DRY_RUN=false`) it also requires `GMAIL_USER`, `GMAIL_APP_PASSWORD`, and `SIGNATURE_HTML` (inline, max 64 KB) or `SIGNATURE_PATH` pointing at an existing file (the signature HTML is appended to every email; `SIGNATURE_HTML` wins when both are set). The resume is no longer an environment file: upload PDFs in **Settings > Resumes**, mark one as the default, and the worker attaches the one each message was scheduled with (see *Resume storage* below). `RESUME_PATH` is an optional legacy fallback for messages scheduled before the library existed; a real send with neither a library resume nor that file is held, never sent without a resume. `signature.html` and `attachments/` are git-ignored: keep real files out of git.
 
 Create the admin login once (applies migrations first; safe to run again, it updates the password and clears any lockout):
 
@@ -35,7 +35,7 @@ npm run web:dev              # frontend on :3001 (set BACKEND_URL if the backend
 
 Open http://localhost:3001 and sign in. Upload a CSV with the exact header `Company,Role,Person,Email,Subject,Mail Text,Follow-up Text` (max 1 MB and 500 rows; `**bold**` is supported in the texts; leave `Follow-up Text` empty to use the shared follow-up template from Settings). Invalid rows are reported and skipped. Then pick the rows, choose a send time (in the future, at most 90 days out, optional stagger between recipients) and confirm.
 
-The worker polls every `POLL_INTERVAL_SECONDS` inside the backend process, sends at most `MAX_PER_TICK` messages per tick with a random gap between sends, and never exceeds `DAILY_SEND_CAP` real emails in a rolling 24 hours.
+With the default `WORKER_MODE=polling` the worker polls every `POLL_INTERVAL_SECONDS` inside the backend process, sends at most `MAX_PER_TICK` messages per tick with a random gap between sends, and never exceeds `DAILY_SEND_CAP` real emails in a rolling 24 hours.
 
 Tests and checks:
 
@@ -50,6 +50,19 @@ npm run e2e:local            # end-to-end walk-through, see below
 ### Local end-to-end check
 
 `npm run e2e:local` (`scripts/e2e-local.js`) creates a throwaway schema, starts the real app on a random port, and drives it over HTTP: login, upload `test/fixtures/sample.csv`, schedule one minute ahead, tick with an injected clock (sent through the dry-run transport), tick again when the follow-up is due and assert the threading headers (`In-Reply-To`, `References`, one `Re:` subject), and show that a simulated reply cancels a pending follow-up. It forces `DRY_RUN=true`, never delivers mail, never touches the `public` schema, and drops its schema at the end.
+
+### Environment variables added for scale-to-zero
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WORKER_MODE` | `polling` | `polling`: in-process send and sweep pollers (local dev). `scheduled`: no pollers; work is triggered through `/internal/*`. |
+| `INTERNAL_AUDIENCE` | unset | Expected OIDC audience (the backend URL). Required when `WORKER_MODE=scheduled`. |
+| `INTERNAL_INVOKER_SA` | unset | Only this service account email may call `/internal/*`. Required when `WORKER_MODE=scheduled`. |
+| `INTERNAL_TICK_DEADLINE_SECONDS` | `540` | Longest a single `/internal/tick` call keeps working (1-3600). |
+| `SEND_WINDOW_ENFORCED` | `false` | Gate real sends to the stored daily window (set `true` in production). |
+| `SWEEP_MAX_AGE_MINUTES` | `90` | Follow-ups are held when the last good reply sweep is older than this (5-1440). |
+| `SIGNATURE_HTML` | unset | Raw signature HTML (max 64 KB). Takes precedence over `SIGNATURE_PATH`; no file needed. |
+| `MIGRATE_ON_START` | `true` | `false` skips migrations at server start (run `node src/db/migrate.js` separately). |
 
 ## Security model
 
@@ -97,20 +110,30 @@ PDFs are uploaded in **Settings > Resumes** (PDF only, up to 5 MB) and stored ou
 
 Two images, no secrets baked into either:
 
-- `Dockerfile` (repo root): backend. Multi-stage, runs as the non-root `node` user with `NODE_ENV=production`, `CMD node src/server/server.js`, health check on `/healthz`. All settings come from the environment at run time. Mount `signature.html` as a file (for example a Secret Manager secret mounted as a volume) and point `SIGNATURE_PATH` at it. Resumes live in the storage bucket (`RESUME_STORAGE=gcs`), not in the image.
+- `Dockerfile` (repo root): backend. Multi-stage, runs as the non-root `node` user with `NODE_ENV=production`, `CMD node src/server/server.js`, health check on `/healthz`. All settings come from the environment at run time. Provide the signature with `SIGNATURE_HTML` (for example a Secret Manager secret exposed as an env var) or mount `signature.html` and point `SIGNATURE_PATH` at it. Resumes live in the storage bucket (`RESUME_STORAGE=gcs`), not in the image. `node src/db/migrate.js` is a standalone entrypoint in the same image (use it as a separate migrate job).
 - `web/Dockerfile`: frontend, Next.js standalone server on port 3001, non-root. Build with the backend's URL, because it is baked into the `/api/*` rewrite when `next build` runs:
   `docker build -f web/Dockerfile --build-arg BACKEND_URL=https://<backend> web`
 
-`.dockerignore` keeps `.env`, `attachments/`, `signature.html`, `.superpowers/` and `node_modules` out of the build context. These images have been read through but **not built in this environment** (no running Docker daemon at the time), so run a build before relying on them.
+Both Dockerfiles pin `node:22-bookworm-slim` by digest (multi-arch index). Refresh with `docker buildx imagetools inspect node:22-bookworm-slim`. `.dockerignore` (root and `web/`) keeps `.env*`, `attachments/`, `signature.html`, `.git`, `.superpowers/`, `.impeccable/`, `docs/`, `infra/`, `test/` and `node_modules` out of the build context. These images have been read through but **not built in this environment** (no running Docker daemon at the time), so run a build before relying on them.
+
+### Scale-to-zero (Cloud Run + Cloud Scheduler)
+
+Postgres is the queue, so the backend does not need to stay up. Run it with `WORKER_MODE=scheduled`: the server only serves HTTP and starts **no** in-process pollers. Cloud Scheduler wakes it with OIDC-authenticated POSTs:
+
+- `POST /internal/tick` loops the send worker until nothing is due, the send window closes, `INTERNAL_TICK_DEADLINE_SECONDS` passes, or the service shuts down. Response: `{ok, reason, iterations, summary}` where `reason` is `idle | window_closed | deadline | paused | shutdown | iteration_cap`. A call that overlaps a running tick returns `200 {ok, skipped: true, reason: "in_progress"}` (so Scheduler does not retry it).
+- `POST /internal/sweep` runs the reply sweep (same single-flight as `POST /api/sweep`) and returns `{ok, result}`; a sweep already running yields `200` with `result: {skipped: true, reason: "in_progress"}`.
+- Auth: a Google-signed ID token whose audience is `INTERNAL_AUDIENCE` (the backend URL) and whose `email` is `INTERNAL_INVOKER_SA` with `email_verified`. No/invalid token is `401`, a valid token from another account is `403`; the body never says why. These are the only routes (besides `/healthz`) mounted before the session/CSRF guards; a browser session does not authenticate them. `WORKER_MODE=scheduled` refuses to start without both settings.
+- Send window: real sends are claimed only inside the daily window when `SEND_WINDOW_ENFORCED=true` (production). The window lives in the settings table (default 09:00-10:00 `Asia/Kolkata`; start inclusive, end exclusive, same day) and is edited in Settings > Send window or via `GET/PUT /api/settings/send-window`. Dry-run and local dev (`SEND_WINDOW_ENFORCED` unset) are never gated. Messages due outside the window simply wait for the next one.
+- Follow-ups are held while the last good reply sweep is older than `SWEEP_MAX_AGE_MINUTES` (default 90), so schedule a sweep shortly before the window opens.
+- Set `MIGRATE_ON_START=false` in production and run `node src/db/migrate.js` as a job before each rollout.
+- Logs are one-line JSON (`severity`, `message`, plus fields) so Cloud Logging severity works; they never contain tokens, passwords or message bodies.
 
 Suggested Google Cloud shape:
 
-1. Put `DATABASE_URL`, `SESSION_SECRET`, `GMAIL_APP_PASSWORD` and the admin password in **Secret Manager** and expose them to Cloud Run as environment variables or mounted files; never put them in the image or in `.env.example`.
-2. Deploy the backend and the frontend as two **Cloud Run** services (or one service with both containers) over HTTPS only (`NODE_ENV=production` makes the session cookie `Secure`). Set `TRUST_PROXY` as described above.
-3. Run migrations at start (the server does this) and seed the admin once, for example as a Cloud Run job: `node scripts/seedAdmin.js` with `ADMIN_*` set.
-4. Sending cadence. Today the send worker is an in-process poller: it runs every `POLL_INTERVAL_SECONDS` for as long as the backend process is running, so on Cloud Run it needs an instance that stays up with CPU always allocated (minimum instances 1). There is **no tick HTTP endpoint yet**.
-   - Planned design: add an authenticated tick endpoint (verified Cloud Scheduler OIDC token) that runs one worker tick, turn the in-process poller off in that mode, and let **Cloud Scheduler** call it. The claim logic already uses `FOR UPDATE SKIP LOCKED` with an advisory lock, so concurrent ticks never send the same message.
-   - Send window: the intended use is sending only between 9 and 10 am each day, by having Cloud Scheduler call the tick endpoint only in that window (a cron such as `*/2 9 * * *` in the right time zone). **A send-window setting is not implemented.** Until then, control timing by choosing send times (and the stagger) when you schedule a batch, and bound volume with `DAILY_SEND_CAP`, `MAX_PER_TICK` and the send gap.
+1. Put `DATABASE_URL`, `SESSION_SECRET`, `GMAIL_APP_PASSWORD`, `SIGNATURE_HTML` and the admin password in **Secret Manager** and expose them to Cloud Run as environment variables; never put them in the image or in `.env.example`.
+2. Deploy the backend (max instances 1, min 0) and the frontend as two **Cloud Run** services over HTTPS only (`NODE_ENV=production` makes the session cookie `Secure`). Set `TRUST_PROXY` as described above.
+3. Run migrations with the migrate job and seed the admin once, for example as a Cloud Run job: `node scripts/seedAdmin.js` with `ADMIN_*` set.
+4. Cloud Scheduler (time zone `Asia/Kolkata`): `POST /internal/tick` every few minutes during the window (for example `*/5 9 * * *`) and `POST /internal/sweep` a few times a day, each with an OIDC token for the invoker service account. The claim logic uses `FOR UPDATE SKIP LOCKED` with an advisory lock, so a missed or duplicate wake-up is a delay, never a duplicate send.
    - **Cloud Tasks adapter (not built).** The scheduler is deliberately a database poller, not a queue. If per-message delivery times in Cloud Tasks are wanted later, an adapter can enqueue one task per scheduled message that calls the same claim-and-send code path; the database stays the source of truth.
 
 ## Known limits
