@@ -203,6 +203,8 @@ test("(d) retries only when nothing was sent: up to 3 attempts with backoff, the
   assert.equal(row.state, "failed");
   assert.equal(s.failed, 1);
   assert.equal(m.calls.length, 3);
+  // A retry keeps the Message-ID stored on first claim, so a mis-classified "not delivered" would still dedupe.
+  assert.equal(new Set(m.calls.map((x) => x.messageId)).size, 1);
   const c = await contactRow(contact.id);
   assert.equal(c.status, "failed");
   assert.match(c.error, /EAUTH/);

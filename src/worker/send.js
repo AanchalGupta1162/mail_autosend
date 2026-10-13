@@ -46,7 +46,8 @@ export function buildMail({ config, signatureHtml, contact, message, initialMess
     });
     // Every mail carries the resume (the legacy CLI follow-up builder does not, so it is added here).
     if (config.resumePath) options.attachments = [{ path: config.resumePath }];
-    options.subject = /^re:/i.test(rendered.subject) ? rendered.subject : `Re: ${rendered.subject}`;
+    // Exactly one "Re: " prefix, even when the original subject or the template already carries some.
+    options.subject = `Re: ${rendered.subject.replace(/^\s*(re:\s*)+/i, "")}`;
   }
   options.messageId = message.message_id;
   return options;

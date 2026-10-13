@@ -62,8 +62,9 @@ async function claim(pool, config, now, maxRows = 1, followupsAllowed = true) {
       [now, config.dryRun, limit, followupsAllowed],
     );
     rows.sort((a, b) => a.scheduled_for - b.scheduled_for || a.created_at - b.created_at || (a.id < b.id ? -1 : 1));
+    // Keep a Message-ID stored by an earlier attempt (retry / requeue): one logical email, one id.
     for (const r of rows) {
-      r.message_id = newMessageId(config);
+      r.message_id ??= newMessageId(config);
       await db.query("UPDATE messages SET message_id = $2 WHERE id = $1", [r.id, r.message_id]);
     }
     return rows;
