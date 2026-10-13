@@ -10,7 +10,13 @@
     "migrate": "node --env-file=.env src/db/migrate.js",
     "seed:admin": "node --env-file=.env scripts/seedAdmin.js",
     "sample-sheet": "node scripts/createSampleSheet.js",
-    "test": "node --env-file=.env --test \"test/**/*.test.js\""
+    "test": "node --env-file=.env --test \"test/**/*.test.js\"",
+    "web:install": "npm --prefix web ci",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:start": "npm --prefix web run start",
+    "web:test": "npm --prefix web test",
+    "web:lint": "npm --prefix web run lint"
   },
   "dependencies": {
     "connect-pg-simple": "^10.0.0",
