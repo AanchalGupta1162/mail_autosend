@@ -8,14 +8,16 @@ import { authRouter } from "../auth/routes.js";
 import { batchesRouter } from "./routes/batches.js";
 import { contactsRouter } from "./routes/contacts.js";
 import { dashboardRouter } from "./routes/dashboard.js";
+import { resumesRouter } from "./routes/resumes.js";
 import { schedulingRouter } from "./routes/scheduling.js";
+import { createResumeStorage } from "../storage/resumes.js";
 import { errorHandler, notFound } from "./errors.js";
 
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
 // createApp({pool, config, mailer?, logger?, loginRateLimit?, csrfRateLimit?}) -> express app.
 // The session table comes from migration 002 (resolved via the pool's search_path).
-export function createApp({ pool, config, mailer, checkReply, logger = console, loginRateLimit = {}, csrfRateLimit = {} } = {}) {
+export function createApp({ pool, config, mailer, checkReply, resumeStorage, logger = console, loginRateLimit = {}, csrfRateLimit = {} } = {}) {
   if (!pool) throw new Error("pool is required");
   if (typeof config?.sessionSecret !== "string" || config.sessionSecret.length < 32) {
     throw new Error("SESSION_SECRET must be at least 32 characters");
@@ -108,6 +110,7 @@ export function createApp({ pool, config, mailer, checkReply, logger = console, 
   // Deny by default: guards come before every router.
   app.use("/api", requireAuth, requireCsrf);
   app.use("/api/auth", authRouter({ pool }));
+  app.use("/api/resumes", resumesRouter({ pool, storage: resumeStorage ?? createResumeStorage(config) }));
   app.use("/api/batches", batchesRouter({ pool, config }));
   app.use("/api/contacts", contactsRouter({ pool }));
   app.use("/api", schedulingRouter({ pool }));
